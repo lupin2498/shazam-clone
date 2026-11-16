@@ -28,7 +28,7 @@ from ..ids import new_id
 from ..logsafe import redact
 from ..models import Track, TrackLink
 from .adapters import build_adapters
-from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo
+from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo, safe_link_url
 from .circuit import BreakerRegistry
 
 log = logging.getLogger(__name__)
@@ -78,9 +78,32 @@ class LinkResolver:
         return f"links:v1:{track.cache_key}:{country}:{variant or '-'}:{adapter}"
 
     async def _run(self, adapter: Adapter, ctx: ResolveContext) -> tuple[list[LinkOut], bool]:
+        links, degraded = await self._call(adapter, ctx)
+        return self._only_web_links(adapter, links), degraded
+
+    def _only_web_links(self, adapter: Adapter, links: list[LinkOut]) -> list[LinkOut]:
+        """Single choke point: whatever an adapter returns, only http(s) links reach the app."""
+        safe: list[LinkOut] = []
+        for link in links:
+            url = safe_link_url(link.url)
+            if url is None:
+                log.warning("adapter %s: dropped a %s link with an unsafe URL", adapter.name, link.kind)
+                continue
+            link.url = url
+            safe.append(link)
+        return safe
+
+    def _fallback(self, adapter: Adapter, ctx: ResolveContext) -> list[LinkOut]:
+        try:
+            return adapter.fallback(ctx)
+        except Exception as exc:  # noqa: BLE001 - e.g. a broken SEARCH_URL_OVERRIDES template
+            log.error("adapter %s fallback failed: %s", adapter.name, redact(repr(exc)))
+            return []
+
+    async def _call(self, adapter: Adapter, ctx: ResolveContext) -> tuple[list[LinkOut], bool]:
         breaker = self.breakers.get(adapter.name)
         if not breaker.allow():
-            return adapter.fallback(ctx), True
+            return self._fallback(adapter, ctx), True
         timeout = adapter.timeout_s or self.settings.adapter_timeout_s
         try:
             links = await asyncio.wait_for(adapter.resolve(ctx), timeout)
@@ -88,13 +111,13 @@ class LinkResolver:
             return links, False
         except QuotaExhausted as exc:
             log.info("%s: %s", adapter.name, exc)
-            return adapter.fallback(ctx), True
+            return self._fallback(adapter, ctx), True
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - any adapter failure degrades to its fallback
             breaker.failure()
             log.warning("adapter %s failed: %s", adapter.name, redact(repr(exc)))
-            return adapter.fallback(ctx), True
+            return self._fallback(adapter, ctx), True
 
     async def _persist(self, session: AsyncSession, track_id: str, country: str, links: list[LinkOut]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

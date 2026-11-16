@@ -6,7 +6,7 @@ Primary source is the link AudD returns. Otherwise the public iTunes Search API
 
 from __future__ import annotations
 
-from ..base import BUY, EXACT, LISTEN, Adapter, LinkOut, ResolveContext, compact
+from ..base import BUY, EXACT, LISTEN, Adapter, LinkOut, ResolveContext, compact, safe_link_url
 
 ITUNES_SEARCH = "https://itunes.apple.com/search"
 
@@ -16,7 +16,7 @@ class AppleMusicAdapter(Adapter):
     platforms = ("apple_music", "itunes")
 
     async def resolve(self, ctx: ResolveContext) -> list[LinkOut]:
-        url = ctx.track.external_ids.get("apple_music_url")
+        url = safe_link_url(ctx.track.external_ids.get("apple_music_url"))
         if url:
             return [LinkOut("apple_music", LISTEN, EXACT, url, ctx.track.title, ctx.track.duration_ms, 1.0)]
         resp = await ctx.http.get(
@@ -29,9 +29,9 @@ class AppleMusicAdapter(Adapter):
             score = ctx.score(it.get("trackName") or "", it.get("artistName"), it.get("trackTimeMillis"))
             if ctx.accept(score) and score > best_score:
                 best, best_score = it, score
-        if best is None or not best.get("trackViewUrl"):
+        url = safe_link_url(best.get("trackViewUrl")) if best else None
+        if best is None or url is None:
             return self.fallback(ctx)
-        url = best["trackViewUrl"]
         title, duration = best.get("trackName"), best.get("trackTimeMillis")
         links = [LinkOut("apple_music", LISTEN, EXACT, url, title, duration, best_score)]
         if (best.get("trackPrice") or 0) > 0:

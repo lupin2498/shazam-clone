@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -14,6 +16,38 @@ from ..text import has_instrumental_marker, is_classical, is_instrumental_versio
 
 LISTEN, BUY, FREE_DOWNLOAD, OFFLINE = "listen", "buy", "free_download", "offline_in_app"
 EXACT, SEARCH = "exact", "search"
+
+_MAX_URL_LENGTH = 2000
+_PLATFORM_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def safe_link_url(url: object) -> str | None:
+    """The URL if the app may open it: absolute http(s) with a host, nothing else.
+
+    Links come from third parties (a SoundCloud uploader chooses ``purchase_url``, engines and
+    aggregators return whole URLs) and the app hands them to the system to open, so
+    ``javascript:``, ``intent:``, ``file:``, ``market:``... must never get that far.
+    """
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url or len(url) > _MAX_URL_LENGTH or any(ch.isspace() or ord(ch) < 0x20 for ch in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    return url
+
+
+def safe_platform_id(value: object) -> str | None:
+    """A platform id (video id, track id) that is safe to paste into a URL path or query."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    return value if isinstance(value, str) and _PLATFORM_ID.fullmatch(value) else None
 
 
 @dataclass

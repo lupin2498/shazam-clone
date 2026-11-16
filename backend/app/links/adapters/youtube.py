@@ -12,7 +12,7 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 
-from ..base import EXACT, LISTEN, Adapter, LinkOut, QuotaExhausted, ResolveContext, compact
+from ..base import EXACT, LISTEN, Adapter, LinkOut, QuotaExhausted, ResolveContext, compact, safe_platform_id
 
 API = "https://www.googleapis.com/youtube/v3"
 _ISO_DURATION = re.compile(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
@@ -42,7 +42,7 @@ class YouTubeAdapter(Adapter):
     platforms = ("youtube",)
 
     async def resolve(self, ctx: ResolveContext) -> list[LinkOut]:
-        vid = ctx.track.external_ids.get("youtube")
+        vid = safe_platform_id(ctx.track.external_ids.get("youtube"))
         if vid:
             return [LinkOut("youtube", LISTEN, EXACT, watch_url(vid), ctx.track.title, ctx.track.duration_ms, 1.0)]
         found = await self._search(ctx) if ctx.settings.youtube_api_key else None
@@ -72,7 +72,7 @@ class YouTubeAdapter(Adapter):
             await ctx.cache.set(_quota_key(), str(ctx.settings.youtube_search_daily_limit), 2 * 86400)
             raise QuotaExhausted("youtube quotaExceeded")
         resp.raise_for_status()
-        items = [i for i in resp.json().get("items") or [] if (i.get("id") or {}).get("videoId")]
+        items = [i for i in resp.json().get("items") or [] if safe_platform_id((i.get("id") or {}).get("videoId"))]
         if not items:
             return None
         ids = [i["id"]["videoId"] for i in items]
@@ -101,7 +101,7 @@ class YouTubeMusicAdapter(Adapter):
     platforms = ("youtube_music",)
 
     async def resolve(self, ctx: ResolveContext) -> list[LinkOut]:
-        vid = ctx.track.external_ids.get("youtube")
+        vid = safe_platform_id(ctx.track.external_ids.get("youtube"))
         if vid:
             listen = LinkOut("youtube_music", LISTEN, EXACT, watch_url(vid, music=True), ctx.track.title,
                              ctx.track.duration_ms, 1.0)
