@@ -226,6 +226,21 @@ void main() {
       expect(full, isA<Matched>());
     });
 
+    test('no usable server address: says where to set it and is not queued as "offline"', () {
+      ListenOutcome? outcome;
+      late dynamic services;
+      fakeAsync((async) {
+        fakeServices(native: native, handler: noMatchThenMatch).then((s) async {
+          services = s;
+          await s.settings.setServerOverride(''); // as a release build with no address
+          outcome = await session(s).start();
+        });
+        async.elapse(const Duration(seconds: 30));
+      });
+      expect(outcome, isA<Failed>().having((f) => f.message, 'message', contains('Cài đặt')));
+      expect(services.history.pendingCount, 0, reason: 'retrying later cannot fix a missing address');
+    });
+
     test('"matched" without any candidate is treated as no match', () {
       final outcome = run((r) async => jsonResponse(recognitionJson(candidates: [])));
       expect(outcome, isA<NoMatch>());
