@@ -52,7 +52,7 @@ Rà mà không thấy lỗi: thứ tự trường `requestHash` khớp ở cả 
 
 | Mức độ | Vấn đề | Vì sao chưa sửa |
 |---|---|---|
-| Cao (khi bật enforce) | iOS trả `false` cho `integrityPrepare` (chưa có App Attest), nên không bao giờ gửi token. Bật `INTEGRITY_MODE=enforce` thì mọi yêu cầu từ iOS bị từ chối với câu "Hãy cài app từ Google Play" (`backend/app/deps.py:50`) | Cần quyết định thiết kế (App Attest/DeviceCheck, hoặc backend miễn kiểm theo nền tảng); `mobile/ios/` ngoài phạm vi |
+| Cao (khi bật enforce) | iOS trả `false` cho `integrityPrepare` (chưa có App Attest), nên không bao giờ gửi token. Bật `INTEGRITY_MODE=enforce` thì mọi yêu cầu từ iOS bị từ chối (403 `integrity_failed`; câu báo lỗi đã đổi thành trung tính ở `5ccd071`) | Cần quyết định thiết kế (App Attest/DeviceCheck, hoặc backend miễn kiểm theo nền tảng); `mobile/ios/` ngoài phạm vi |
 | Trung bình (chưa đo) | Timeout của app là 25 s; backend trường hợp xấu nhất chạy hai engine × 10 s + ảnh bìa 1,5 s + tải lên mạng di động. Vượt 25 s thì app lưu mẫu offline rồi gửi lại, tốn thêm lượt | Không có khoá engine thật để đo |
 | Thấp | Mẫu offline gửi lại bằng `session_id` mới: một lần chạm có thể tốn 2 lượt (mẫu 6 s đã tính + mẫu đầy đủ gửi lại) | Đúng thiết kế đã ghi trong `8af445e`; cần quyết định sản phẩm |
 | Thấp | Activity bị huỷ khi đang mở trình chọn file ("Không giữ hoạt động", máy ít RAM): tệp đã chọn bị bỏ qua | Giới hạn của FlutterActivity tạo engine theo từng activity |
