@@ -46,6 +46,7 @@ abstract final class S {
   static const savedOfflineHint = 'Bạn đang mất mạng. App sẽ nhận diện khi có mạng và gửi thông báo khi xong.';
   static const networkError = 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.';
   static const genericError = 'Đã có lỗi xảy ra. Vui lòng thử lại.';
+  static const serverBusy = 'Máy chủ đang bận. Vui lòng thử lại sau.';
   static const candidatesTitle = 'Có thể là một trong các bài sau';
   static const candidatesHint = 'Chọn bài đúng để xem link.';
   static String confidence(double c) => 'Độ tin cậy ${(c * 100).round()}%';

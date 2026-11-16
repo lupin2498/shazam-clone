@@ -25,6 +25,20 @@ class FakeNative implements NativeBridge {
   bool micGranted = true;
   bool online = true;
   bool recordingStarts = true;
+
+  /// Failures injected by tests: thrown by the matching call when set.
+  Object? startError, snapshotError, stopError, cancelError, openError, previewStopError;
+
+  /// Completes the permission check later, as a busy device would.
+  Completer<void>? micPermissionGate;
+  Completer<AudioProbe>? probeGate;
+  Completer<bool>? previewGate;
+
+  /// Play Integrity: prepare() succeeds from the Nth call on (0 = never).
+  int integrityReadyFromCall = 0;
+  int integrityPrepareCalls = 0;
+  int integrityTokenCalls = 0;
+  bool integrityTokenFails = false;
   EncodedSample snapshot = sample(durationMs: 6000);
   EncodedSample full = sample();
   final calls = <String>[];
@@ -39,7 +53,10 @@ class FakeNative implements NativeBridge {
   Stream<bool> get connectivity => connectivityCtrl.stream;
 
   @override
-  Future<bool> hasMicPermission() async => micGranted;
+  Future<bool> hasMicPermission() async {
+    await micPermissionGate?.future;
+    return micGranted;
+  }
   @override
   Future<bool> shouldShowMicRationale() async => true;
   @override
@@ -50,28 +67,38 @@ class FakeNative implements NativeBridge {
   @override
   Future<bool> startRecording({required int maxSeconds}) async {
     calls.add('start:$maxSeconds');
+    if (startError != null) throw startError!;
     return recordingStarts;
   }
 
   @override
   Future<EncodedSample> snapshotRecording({required int maxMs}) async {
     calls.add('snapshot:$maxMs');
+    if (snapshotError != null) throw snapshotError!;
     return snapshot;
   }
 
   @override
   Future<EncodedSample> stopRecording() async {
     calls.add('stop');
+    if (stopError != null) throw stopError!;
     return full;
   }
 
   @override
-  Future<void> cancelRecording() async => calls.add('cancel');
+  Future<void> cancelRecording() async {
+    calls.add('cancel');
+    if (cancelError != null) throw cancelError!;
+  }
 
   @override
   Future<PickedFile?> pickAudioFile() async => const PickedFile(uri: 'content://x/1', name: 'song.mp3');
   @override
-  Future<AudioProbe> probeAudio(String uri) async => const AudioProbe(durationMs: 200000, name: 'song.mp3');
+  Future<AudioProbe> probeAudio(String uri) async {
+    calls.add('probe');
+    if (probeGate != null) return probeGate!.future;
+    return const AudioProbe(durationMs: 200000, name: 'song.mp3');
+  }
   @override
   Future<List<double>> audioWaveform(String uri, {int buckets = 160}) async => List.filled(buckets, 0.5);
 
@@ -82,12 +109,21 @@ class FakeNative implements NativeBridge {
   }
 
   @override
-  Future<bool> previewPlay(String uri, {required int startMs, required int durationMs}) async => true;
+  Future<bool> previewPlay(String uri, {required int startMs, required int durationMs}) async {
+    calls.add('previewPlay');
+    if (previewGate != null) return previewGate!.future;
+    return true;
+  }
+
   @override
-  Future<void> previewStop() async {}
+  Future<void> previewStop() async {
+    calls.add('previewStop');
+    if (previewStopError != null) throw previewStopError!;
+  }
 
   @override
   Future<bool> openUrl(String url, {String? androidPackage}) async {
+    if (openError != null) throw openError!;
     opened.add((url, androidPackage));
     return true;
   }
@@ -105,9 +141,17 @@ class FakeNative implements NativeBridge {
   @override
   Future<bool> requestNotificationPermission() async => true;
   @override
-  Future<bool> integrityPrepare(String cloudProjectNumber) async => false;
+  Future<bool> integrityPrepare(String cloudProjectNumber) async {
+    integrityPrepareCalls++;
+    return integrityReadyFromCall > 0 && integrityPrepareCalls >= integrityReadyFromCall;
+  }
+
   @override
-  Future<String?> integrityToken(String requestHash) async => null;
+  Future<String?> integrityToken(String requestHash) async {
+    integrityTokenCalls++;
+    if (integrityTokenFails) throw StateError('INTEGRITY_TOKEN_PROVIDER_INVALID');
+    return 'token-for-$requestHash';
+  }
 }
 
 Map<String, dynamic> trackJson({String id = 'trk_1', String title = 'Nơi Này Có Anh', bool instrumental = false}) => {
@@ -170,6 +214,9 @@ Map<String, String> multipartFields(http.Request r) {
 Future<AppServices> fakeServices({
   FakeNative? native,
   required Future<http.Response> Function(http.Request) handler,
+  http.Client? client,
+  HistoryDb? db,
+  Duration streamStallTimeout = const Duration(seconds: 20),
 }) async {
   SharedPreferences.setMockInitialValues({});
   final bridge = native ?? FakeNative();
@@ -179,9 +226,10 @@ Future<AppServices> fakeServices({
     baseUrl: 'http://test',
     deviceId: () => settings.deviceId,
     integrity: integrity,
-    client: MockClient(handler),
+    client: client ?? MockClient(handler),
+    streamStallTimeout: streamStallTimeout,
   );
-  final history = HistoryRepository(MemoryHistoryDb());
+  final history = HistoryRepository(db ?? MemoryHistoryDb());
   final config = ConfigRepository(api, settings);
   config.value = AppConfig.defaults;
   return AppServices(
