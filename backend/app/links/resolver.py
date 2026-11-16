@@ -146,40 +146,69 @@ class LinkResolver:
         rows = await session.execute(select(TrackLink.id).where(TrackLink.track_id == track_id, TrackLink.hidden.is_(True)))
         return {r[0] for r in rows}
 
+    async def _load_hidden(self, track_id: str) -> set[str]:
+        async with self.sessionmaker() as session:
+            return await self._hidden_ids(session, track_id)
+
+    async def _store(self, track_id: str, country: str, links: list[LinkOut]) -> list[dict[str, Any]]:
+        async with self.sessionmaker() as session:
+            return await self._persist(session, track_id, country, links)
+
+    @staticmethod
+    async def _finish(coro: Any) -> Any:
+        """Run a short database step to its end even if the request is cancelled meanwhile.
+
+        A client that hangs up cancels the stream. Cancelling in the middle of a statement
+        leaves the connection unusable: the pool has to destroy it (and logs an error with a
+        traceback for every hang-up). The step is a few milliseconds, so let it finish and
+        hand its connection back cleanly; the cancellation is still raised here.
+        """
+        task = asyncio.ensure_future(coro)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            raise
+
     async def stream(self, track: Track, country: str, variant: str | None = None) -> AsyncIterator[AdapterEvent]:
+        """Events per adapter as they finish.
+
+        No database connection is held while adapters are running (up to several seconds):
+        a session is opened only for the few milliseconds of each read or write. Holding one
+        for the whole stream let a dozen simultaneous streams use up the connection pool.
+        """
         info = track_info(track)
         ctx = ResolveContext(track=info, country=country, variant=variant, http=self.http,
                              cache=self.cache, settings=self.settings)
-        async with self.sessionmaker() as session:
-            hidden = await self._hidden_ids(session, info.id)
-            tasks: dict[asyncio.Task, tuple[Adapter, str]] = {}
-            try:
-                for adapter in self.adapters:
-                    key = self._cache_key(info, country, variant, adapter.name)
-                    cached = await self.cache.get_json(key)
-                    if cached is not None:
-                        yield AdapterEvent(adapter.name, [l for l in cached if l["id"] not in hidden], cached=True)
-                        continue
-                    tasks[asyncio.create_task(self._run(adapter, ctx))] = (adapter, key)
-                pending = set(tasks)
-                while pending:
-                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        adapter, key = tasks[task]
-                        links, degraded = task.result()
-                        rows = await self._persist(session, info.id, country, links)
-                        if degraded:
-                            ttl = self.settings.link_cache_ttl_degraded_s
-                        elif any(l["match"] == EXACT for l in rows):
-                            ttl = self.settings.link_cache_ttl_exact_s
-                        else:
-                            ttl = self.settings.link_cache_ttl_empty_s
-                        await self.cache.set_json(key, rows, ttl)
-                        yield AdapterEvent(adapter.name, rows, degraded=degraded)
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
+        hidden = await self._finish(self._load_hidden(info.id))
+        tasks: dict[asyncio.Task, tuple[Adapter, str]] = {}
+        try:
+            for adapter in self.adapters:
+                key = self._cache_key(info, country, variant, adapter.name)
+                cached = await self.cache.get_json(key)
+                if cached is not None:
+                    yield AdapterEvent(adapter.name, [l for l in cached if l["id"] not in hidden], cached=True)
+                    continue
+                tasks[asyncio.create_task(self._run(adapter, ctx))] = (adapter, key)
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    adapter, key = tasks[task]
+                    links, degraded = task.result()
+                    rows = await self._finish(self._store(info.id, country, links))
+                    if degraded:
+                        ttl = self.settings.link_cache_ttl_degraded_s
+                    elif any(l["match"] == EXACT for l in rows):
+                        ttl = self.settings.link_cache_ttl_exact_s
+                    else:
+                        ttl = self.settings.link_cache_ttl_empty_s
+                    await self.cache.set_json(key, rows, ttl)
+                    yield AdapterEvent(adapter.name, rows, degraded=degraded)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     async def resolve_all(self, track: Track, country: str, variant: str | None = None) -> list[dict[str, Any]]:
         links: list[dict[str, Any]] = []

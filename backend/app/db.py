@@ -26,10 +26,11 @@ async def insert_if_absent(session: AsyncSession, model: type[Base], values: dic
 
 
 class Database:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, **engine_options: Any) -> None:
         kwargs: dict = {}
         if not url.startswith("sqlite"):
             kwargs.update(pool_pre_ping=True, pool_size=10, max_overflow=20)
+        kwargs.update(engine_options)
         self.engine: AsyncEngine = create_async_engine(url, **kwargs)
         self.sessionmaker: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self.engine, expire_on_commit=False
