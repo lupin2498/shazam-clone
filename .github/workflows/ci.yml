@@ -16,7 +16,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A push run builds the installers of its commit, so it is left to finish and newer
+  # pushes queue behind it. Superseded pull request runs are cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FLUTTER_VERSION: "3.50.0"
