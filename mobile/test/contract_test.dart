@@ -1,4 +1,5 @@
 // Values shared with the backend: a change on one side must break a test on that side.
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -51,6 +52,31 @@ void main() {
       'token-for-$_searchVietnamese',
       'token-for-$_report',
     ]);
+  });
+
+  test('a late /v1/config from the previous server does not replace the new server\'s', () async {
+    Map<String, dynamic> config(String project) => {
+          'platforms': [
+            {'id': 'spotify', 'name': 'Spotify', 'color': '#1DB954', 'android_package': 'com.spotify.music'},
+          ],
+          'integrity': {'cloud_project_number': project},
+        };
+    final slowOld = Completer<http.Response>();
+    final s = await fakeServices(
+      native: FakeNative()..integrityReadyFromCall = 1,
+      handler: (r) => r.url.host == 'old.example' ? slowOld.future : Future.value(jsonResponse(config('222'))),
+    );
+    // "Cài đặt → Máy chủ" twice in a row: the first server answers after the second one.
+    await s.settings.setServerOverride('https://old.example');
+    final first = s.reconnect();
+    await s.settings.setServerOverride('https://new.example');
+    expect(await s.reconnect(), isTrue);
+    slowOld.complete(jsonResponse(config('111')));
+    expect(await first, isFalse, reason: 'that answer is for a server the app no longer uses');
+
+    expect(s.config.value.cloudProjectNumber, '222');
+    expect(s.settings.cachedConfig?['integrity'], {'cloud_project_number': '222'});
+    expect((s.native as FakeNative).integrityPrepareCalls, 1, reason: 'no prepare for the old project');
   });
 
   group('Play Integrity recovers without restarting the app', () {

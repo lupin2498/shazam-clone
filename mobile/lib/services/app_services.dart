@@ -32,12 +32,17 @@ class ConfigRepository extends ValueNotifier<AppConfig> {
 
   /// Returns whether the backend answered with a usable config.
   Future<bool> refresh() async {
+    final server = _api.currentBaseUrl;
     try {
       final json = await _api.fetchConfigJson();
+      // The address changed while waiting ("Cài đặt → Máy chủ" twice in a row): this answer
+      // belongs to a server the app no longer talks to. Keeping it would pair the new server
+      // with the old one's settings (platforms, Play Integrity project).
+      if (_api.currentBaseUrl != server) return false;
       final config = AppConfig.fromJson(json);
       if (config.platforms.isEmpty) return false;
-      await _settings.saveConfig(json);
       value = config;
+      await _settings.saveConfig(json);
       return true;
     } catch (_) {
       // Offline or server down: keep the cached/default config.
