@@ -37,6 +37,9 @@ class _HomeScreenState extends State<HomeScreen> {
   ListenMode _mode = ListenMode.listen;
   StreamSubscription<PickedFile>? _shared;
 
+  /// "OK" on the outdated-app banner hides it until the app is started again.
+  bool _outdatedDismissed = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -78,13 +81,19 @@ class _HomeScreenState extends State<HomeScreen> {
           listenable: Listenable.merge([services.history, services.config]),
           builder: (context, _) {
             final recent = services.history.recent;
-            final outdated = isOutdated(kAppVersion, services.config.value.minAppVersion);
+            final outdated =
+                !_outdatedDismissed && isOutdated(kAppVersion, services.config.value.minAppVersion);
             return Column(
               children: [
                 if (outdated)
                   MaterialBanner(
-                    content: const Text('Phiên bản app đã cũ, vui lòng cập nhật trên Google Play.'),
-                    actions: [TextButton(onPressed: () {}, child: const Text('OK'))],
+                    content: const Text(S.appOutdated),
+                    actions: [
+                      TextButton(
+                        onPressed: () => setState(() => _outdatedDismissed = true),
+                        child: const Text(S.ok),
+                      ),
+                    ],
                   ),
                 if (services.history.pendingCount > 0)
                   Padding(

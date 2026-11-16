@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ...services.catalog import Catalog
-from ..base import BUY, EXACT, LISTEN, Adapter, LinkOut, ResolveContext
+from ..base import BUY, EXACT, LISTEN, Adapter, LinkOut, ResolveContext, safe_link_url, safe_platform_id
 
 API = "https://api.song.link/v1-alpha.1/links"
 
@@ -39,17 +39,17 @@ class OdesliAdapter(Adapter):
 
     async def _seed(self, ctx: ResolveContext) -> str | None:
         ids = ctx.track.external_ids
-        if ids.get("spotify"):
+        if safe_platform_id(ids.get("spotify")):
             return f"https://open.spotify.com/track/{ids['spotify']}"
-        if ids.get("deezer"):
+        if safe_platform_id(ids.get("deezer")):
             return f"https://www.deezer.com/track/{ids['deezer']}"
-        if ids.get("apple_music_url"):
+        if safe_link_url(ids.get("apple_music_url")):
             return ids["apple_music_url"]
-        if ids.get("youtube"):
+        if safe_platform_id(ids.get("youtube")):
             return f"https://www.youtube.com/watch?v={ids['youtube']}"
         if ctx.track.isrc:
             item = await Catalog(ctx.http, ctx.cache).deezer_by_isrc(ctx.track.isrc)
-            if item and item.get("id"):
+            if item and safe_platform_id(item.get("id")):
                 return f"https://www.deezer.com/track/{item['id']}"
         return None
 

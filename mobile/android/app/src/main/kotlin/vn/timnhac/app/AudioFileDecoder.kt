@@ -22,15 +22,21 @@ class AudioFileDecoder(private val context: Context) {
 
     data class Segment(val pcm: ShortArray, val sampleRate: Int)
 
+    /** The extractor is released on every failure path; on success the caller releases it. */
     private fun open(uri: Uri): Pair<MediaExtractor, MediaFormat> {
         val extractor = MediaExtractor()
-        extractor.setDataSource(context, uri, null)
-        for (i in 0 until extractor.trackCount) {
-            val format = extractor.getTrackFormat(i)
-            if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                extractor.selectTrack(i)
-                return extractor to format
+        try {
+            extractor.setDataSource(context, uri, null) // unreadable file, revoked URI permission...
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    extractor.selectTrack(i)
+                    return extractor to format
+                }
             }
+        } catch (e: Exception) {
+            extractor.release()
+            throw e
         }
         extractor.release()
         throw IllegalArgumentException("Tệp không có âm thanh")
@@ -64,7 +70,14 @@ class AudioFileDecoder(private val context: Context) {
      */
     private fun decode(uri: Uri, startUs: Long, sink: (ShortArray, Int, Int, Long) -> Boolean) {
         val (extractor, format) = open(uri)
-        val codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
+        // No decoder for this format on the device (DTS, AC-4, APE...): release the extractor
+        // too, or every retry ("Quét cả file" asks segment after segment) leaks one.
+        val codec = try {
+            MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
+        } catch (e: Exception) {
+            extractor.release()
+            throw e
+        }
         try {
             codec.configure(format, null, null, 0)
             codec.start()

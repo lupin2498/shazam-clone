@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -14,6 +13,8 @@ from .cache import make_cache
 from .config import Settings, get_settings
 from .db import Database
 from .errors import install_handlers
+from .limits import FORM_OVERHEAD_BYTES, BodyLimitMiddleware, keep_uploads_in_memory
+from .logsafe import configure_logging
 from .routers import admin, config, links, recognitions, search, tracks
 from .services.container import Services, build_services
 
@@ -22,7 +23,7 @@ def create_app(settings: Settings | None = None,
                customize: Callable[[Services], None] | None = None) -> FastAPI:
     """``customize`` lets tests swap engines or adapters after the services are built."""
     settings = settings or get_settings()
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_logging(settings.log_level)
     if settings.is_production and settings.demo_mode:
         raise RuntimeError("DEMO_MODE must not be enabled in production")
 
@@ -49,6 +50,8 @@ def create_app(settings: Settings | None = None,
             await db.dispose()
 
     app = FastAPI(title="Tìm Nhạc API", version=__version__, lifespan=lifespan)
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_upload_bytes + FORM_OVERHEAD_BYTES)
+    keep_uploads_in_memory(settings.max_upload_bytes)
     install_handlers(app)
     for module in (recognitions, tracks, search, links, config, admin):
         app.include_router(module.router)

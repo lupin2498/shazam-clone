@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...services.catalog import Catalog
-from ..base import EXACT, LISTEN, Adapter, LinkOut, ResolveContext, compact
+from ..base import EXACT, LISTEN, Adapter, LinkOut, ResolveContext, compact, safe_platform_id
 
 
 def track_url(track_id: str) -> str:
@@ -16,8 +16,9 @@ class DeezerAdapter(Adapter):
 
     async def resolve(self, ctx: ResolveContext) -> list[LinkOut]:
         t = ctx.track
-        if t.external_ids.get("deezer"):
-            return [LinkOut("deezer", LISTEN, EXACT, track_url(t.external_ids["deezer"]), t.title, t.duration_ms, 1.0)]
+        deezer_id = safe_platform_id(t.external_ids.get("deezer"))
+        if deezer_id:
+            return [LinkOut("deezer", LISTEN, EXACT, track_url(deezer_id), t.title, t.duration_ms, 1.0)]
         catalog = Catalog(ctx.http, ctx.cache)
         if t.isrc:
             item = await catalog.deezer_by_isrc(t.isrc)

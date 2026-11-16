@@ -68,10 +68,12 @@ class PendingQueue {
           await _report(r, sample);
         } on ApiException catch (e) {
           if (e.isNetwork) break;
-          if (e.code == 'invalid_sample') {
+          if (_rejectedForGood(e)) {
+            // Sending it again can only fail the same way, and it would block every sample
+            // queued after it.
             await history.db.deletePending(sample.id!);
           } else {
-            // Quota or server trouble: keep it for later.
+            // Quota, server trouble, app too old, no server address: keep it for later.
             await history.db.bumpAttempts(sample.id!);
             break;
           }
@@ -83,20 +85,29 @@ class PendingQueue {
     }
   }
 
+  /// The backend refused the sample itself (bad or too large audio, request it cannot read).
+  static bool _rejectedForGood(ApiException e) =>
+      e.code == 'invalid_sample' || e.code == 'payload_too_large' || e.statusCode == 413 || e.statusCode == 422;
+
   Future<void> _report(RecognitionResult r, PendingSample sample) async {
     final top = r.top;
     if (top == null || r.status == RecognitionStatus.noMatch) {
       await _notify(S.notifyNoMatchTitle, S.notifyNoMatchBody);
       return;
     }
-    await history.add(HistoryEntry(
-      track: top.track,
-      source: sample.source,
-      createdAt: DateTime.now(),
-      recognitionId: r.id,
-      flags: top.flags,
-      confidence: top.confidence,
-    ));
+    try {
+      await history.add(HistoryEntry(
+        track: top.track,
+        source: sample.source,
+        createdAt: DateTime.now(),
+        recognitionId: r.id,
+        flags: top.flags,
+        confidence: top.confidence,
+      ));
+    } catch (_) {
+      // Storage full or broken: the sample is already gone, so at least tell the user the
+      // song (process() runs unawaited; an error here would also stop the queue).
+    }
     await _notify(S.notifyMatchedTitle, S.notifyMatched(top.track.title, top.track.artistLine));
   }
 

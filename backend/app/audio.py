@@ -65,6 +65,8 @@ def wav_duration(data: bytes) -> float:
         chunk_id = data[pos:pos + 4]
         size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
         if chunk_id == b"fmt " and size >= 16:
+            if pos + 20 > len(data):
+                raise InvalidSample("truncated WAV fmt chunk")
             byte_rate = struct.unpack("<I", data[pos + 16:pos + 20])[0]
         elif chunk_id == b"data":
             if not byte_rate:

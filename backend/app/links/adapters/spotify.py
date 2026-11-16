@@ -6,7 +6,7 @@ all the adapter asks for.
 
 from __future__ import annotations
 
-from ..base import EXACT, LISTEN, Adapter, AdapterError, LinkOut, ResolveContext, compact
+from ..base import EXACT, LISTEN, Adapter, AdapterError, LinkOut, ResolveContext, compact, safe_platform_id
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
@@ -21,7 +21,7 @@ class SpotifyAdapter(Adapter):
     platforms = ("spotify",)
 
     async def resolve(self, ctx: ResolveContext) -> list[LinkOut]:
-        sid = ctx.track.external_ids.get("spotify")
+        sid = safe_platform_id(ctx.track.external_ids.get("spotify"))
         listen: LinkOut | None = None
         if sid:
             listen = LinkOut("spotify", LISTEN, EXACT, track_url(sid), ctx.track.title, ctx.track.duration_ms, 1.0)

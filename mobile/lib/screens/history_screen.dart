@@ -67,6 +67,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             ));
           }
+          final searching = _query.text.trim().isNotEmpty;
+          if (entries.isEmpty && searching) {
+            // History is not empty: the query just matches nothing.
+            children.add(const ListTile(leading: Icon(Icons.search_off), title: Text(S.historyNoMatch)));
+            return ListView(children: children);
+          }
           if (entries.isEmpty && history.pendingCount == 0) {
             return const MessageView(icon: Icons.history, title: S.historyEmpty);
           }

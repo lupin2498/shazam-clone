@@ -18,9 +18,9 @@ from ..models import Candidate, Recognition, RecognitionReport
 from ..recognition.cascade import EnginesUnavailable, candidate_flags
 from ..schemas import CandidateOut, RecognitionOut, RecognitionReportIn, TrackOut
 from ..security.integrity import request_hash, sha256_hex
-from ..security.quota import consume
+from ..security.quota import consume, mark_served, refund
 from ..services.container import Services
-from ..services.tracks import upsert_track
+from ..services.tracks import lock_tracks, upsert_track
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["recognitions"])
@@ -57,7 +57,7 @@ async def create_recognition(
 
     await require_integrity(services, x_integrity_token,
                             request_hash(device, session_id or "", stage, sha256_hex(data)))
-    quota = await consume(services.cache, device_id=device, session_id=session_id,
+    quota = await consume(services.cache, device_id=device, session_id=session_id, stage=stage,
                           limit=settings.quota_per_device_per_day, offset_hours=settings.quota_timezone_offset_hours)
     if not quota.allowed:
         raise ApiError(429, "quota_exceeded",
@@ -68,14 +68,22 @@ async def create_recognition(
                       stage=stage, status="no_match")
     try:
         outcome = await services.cascade.run(data, info.filename, mode=mode, stage=stage)
-    except EnginesUnavailable as exc:
-        rec.status, rec.error = "error", str(exc)[:1000]
+    except Exception as exc:  # noqa: BLE001 - an engine bug must not cost the user a tap either
+        if not isinstance(exc, EnginesUnavailable):
+            log.exception("recognition cascade crashed")
+        # The user got nothing for this tap: give the unit back (bounded per day, see quota.py).
+        refunded = await refund(services.cache, device_id=device, session_id=session_id, quota=quota,
+                                limit=settings.quota_per_device_per_day)
+        rec.status, rec.error = "error", (str(exc) or type(exc).__name__)[:1000]
         rec.latency_ms = int((time.perf_counter() - started) * 1000)
         session.add(rec)
         await session.commit()
+        log.warning("recognition %s failed (%s), quota refunded=%s", rec.id, type(exc).__name__, refunded)
         raise ApiError(503, "engines_unavailable", "Máy chủ nhận diện đang bận, vui lòng thử lại sau.") from exc
     finally:
         del data  # the sample is never stored (section 10, privacy)
+    if outcome.final:
+        await mark_served(services.cache, device_id=device, session_id=session_id)
 
     await asyncio.gather(*(services.catalog.enrich(m.track, settings.artwork_lookup_timeout_s)
                            for m in outcome.matches))
@@ -86,6 +94,7 @@ async def create_recognition(
     session.add(rec)
     await session.flush()
     candidates: list[CandidateOut] = []
+    await lock_tracks(session, [m.track for m in outcome.matches])
     for rank, (match, match_flags) in enumerate(zip(outcome.matches, flags), start=1):
         track = await upsert_track(session, match.track)
         session.add(Candidate(recognition_id=rec.id, track_id=track.id, confidence=match.confidence,

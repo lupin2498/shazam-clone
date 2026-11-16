@@ -45,9 +45,10 @@ async def track_links(
     stream: bool = Query(True, description="false → one JSON response once every adapter is done"),
     _device: str = Depends(device_id),
     services: Services = Depends(get_services),
-    session: AsyncSession = Depends(get_session),
 ):
-    track = await _load(session, track_id)
+    # Not the request-scoped session: it would stay checked out for the whole stream.
+    async with services.db.sessionmaker() as session:
+        track = await _load(session, track_id)
     country = country.upper()
     if not stream:
         links = await services.resolver.resolve_all(track, country, variant)

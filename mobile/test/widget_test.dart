@@ -1,11 +1,14 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:material_ui/material_ui.dart';
 import 'package:tim_nhac/app.dart';
+import 'package:tim_nhac/models/app_config.dart';
 import 'package:tim_nhac/models/history_entry.dart';
 import 'package:tim_nhac/models/track.dart';
+import 'package:tim_nhac/screens/history_screen.dart';
 import 'package:tim_nhac/screens/result_screen.dart';
 import 'package:tim_nhac/services/app_services.dart';
 
@@ -58,6 +61,52 @@ void main() {
     await tester.tap(find.text('Ngân nga'));
     await tester.pump();
     expect(find.text('Chạm rồi ngân nga hoặc huýt sáo'), findsOneWidget);
+  });
+
+  testWidgets('"app đã cũ" banner: neutral wording, OK hides it for this run', (tester) async {
+    tester.view.physicalSize = const Size(720, 1280);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final s = await fakeServices(handler: _backend);
+    s.config.value = AppConfig(platforms: AppConfig.defaults.platforms, minAppVersion: '99.0.0');
+    await tester.pumpWidget(TimNhacApp(services: s));
+    await tester.pump();
+
+    final banner = find.byType(MaterialBanner);
+    expect(banner, findsOneWidget);
+    // The app also ships on iOS: the store is not always Google Play.
+    expect(find.textContaining('Google Play'), findsNothing);
+    expect(find.textContaining('Phiên bản app đã cũ'), findsOneWidget);
+
+    await tester.tap(find.descendant(of: banner, matching: find.text('OK')));
+    await tester.pump();
+    expect(find.byType(MaterialBanner), findsNothing);
+
+    // A later config refresh (same minimum) does not bring it back during this run.
+    s.config.value = AppConfig(platforms: AppConfig.defaults.platforms, minAppVersion: '99.0.0');
+    await tester.pump();
+    expect(find.byType(MaterialBanner), findsNothing);
+  });
+
+  testWidgets('history search with no match says so instead of "no history yet"', (tester) async {
+    final s = await fakeServices(handler: _backend);
+    await s.history.add(HistoryEntry(track: Track.fromJson(trackJson()), source: 'mic', createdAt: DateTime.now()));
+    await tester.pumpWidget(_wrap(s, const HistoryScreen()));
+    await tester.pump();
+    expect(find.text('Nơi Này Có Anh'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'không có bài này');
+    await tester.pump();
+    expect(find.text('Chưa có bài nào. Chạm nút nghe để bắt đầu.'), findsNothing);
+    expect(find.text('Không có bài nào khớp với tìm kiếm.'), findsOneWidget);
+
+    // Same with samples waiting for the network: the card stays, the message is added.
+    await s.history.db.insertPending(PendingSample(
+        audio: Uint8List.fromList([1]), mode: 'auto', source: 'mic', createdAt: DateTime.now()));
+    await s.history.refreshPendingCount();
+    await tester.pump();
+    expect(find.text('Đang chờ mạng (1)'), findsOneWidget);
+    expect(find.text('Không có bài nào khớp với tìm kiếm.'), findsOneWidget);
   });
 
   testWidgets('result screen lists every link in "Nghe" and "Tải/Mua" and saves them', (tester) async {

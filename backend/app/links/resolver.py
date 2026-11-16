@@ -24,10 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..cache import Cache
 from ..config import Settings
+from ..db import insert_if_absent
 from ..ids import new_id
+from ..logsafe import redact
 from ..models import Track, TrackLink
+from ..services.tracks import positive_int32
 from .adapters import build_adapters
-from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo
+from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo, safe_link_url
 from .circuit import BreakerRegistry
 
 log = logging.getLogger(__name__)
@@ -77,9 +80,32 @@ class LinkResolver:
         return f"links:v1:{track.cache_key}:{country}:{variant or '-'}:{adapter}"
 
     async def _run(self, adapter: Adapter, ctx: ResolveContext) -> tuple[list[LinkOut], bool]:
+        links, degraded = await self._call(adapter, ctx)
+        return self._only_web_links(adapter, links), degraded
+
+    def _only_web_links(self, adapter: Adapter, links: list[LinkOut]) -> list[LinkOut]:
+        """Single choke point: whatever an adapter returns, only http(s) links reach the app."""
+        safe: list[LinkOut] = []
+        for link in links:
+            url = safe_link_url(link.url)
+            if url is None:
+                log.warning("adapter %s: dropped a %s link with an unsafe URL", adapter.name, link.kind)
+                continue
+            link.url = url
+            safe.append(link)
+        return safe
+
+    def _fallback(self, adapter: Adapter, ctx: ResolveContext) -> list[LinkOut]:
+        try:
+            return adapter.fallback(ctx)
+        except Exception as exc:  # noqa: BLE001 - e.g. a broken SEARCH_URL_OVERRIDES template
+            log.error("adapter %s fallback failed: %s", adapter.name, redact(repr(exc)))
+            return []
+
+    async def _call(self, adapter: Adapter, ctx: ResolveContext) -> tuple[list[LinkOut], bool]:
         breaker = self.breakers.get(adapter.name)
         if not breaker.allow():
-            return adapter.fallback(ctx), True
+            return self._fallback(adapter, ctx), True
         timeout = adapter.timeout_s or self.settings.adapter_timeout_s
         try:
             links = await asyncio.wait_for(adapter.resolve(ctx), timeout)
@@ -87,28 +113,29 @@ class LinkResolver:
             return links, False
         except QuotaExhausted as exc:
             log.info("%s: %s", adapter.name, exc)
-            return adapter.fallback(ctx), True
+            return self._fallback(adapter, ctx), True
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - any adapter failure degrades to its fallback
             breaker.failure()
-            log.warning("adapter %s failed: %r", adapter.name, exc)
-            return adapter.fallback(ctx), True
+            log.warning("adapter %s failed: %s", adapter.name, redact(repr(exc)))
+            return self._fallback(adapter, ctx), True
 
     async def _persist(self, session: AsyncSession, track_id: str, country: str, links: list[LinkOut]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
         for link in links:
-            row = (await session.execute(select(TrackLink).where(
-                TrackLink.track_id == track_id, TrackLink.country == country, TrackLink.platform == link.platform,
-                TrackLink.kind == link.kind, TrackLink.url == link.url,
-            ))).scalar_one_or_none()
-            if row is None:
-                row = TrackLink(id=new_id("lnk"), track_id=track_id, country=country, platform=link.platform,
-                                kind=link.kind, url=link.url)
-                session.add(row)
-            row.match, row.title, row.duration_ms = link.match, link.title, link.duration_ms
-            row.score, row.license, row.verified_at = link.score, link.license, now
+            identity = dict(track_id=track_id, country=country, platform=link.platform, kind=link.kind, url=link.url)
+            duration_ms = positive_int32(link.duration_ms)
+            license_label = link.license[:128] if link.license else None
+            # Two streams for the same track may store the same link at the same moment: the
+            # second INSERT must not break the unique constraint (and with it the whole stream).
+            await insert_if_absent(session, TrackLink, dict(
+                identity, id=new_id("lnk"), match=link.match, title=link.title, duration_ms=duration_ms,
+                score=link.score, license=license_label, verified_at=now), list(identity))
+            row = (await session.execute(select(TrackLink).filter_by(**identity))).scalar_one()
+            row.match, row.title, row.duration_ms = link.match, link.title, duration_ms
+            row.score, row.license, row.verified_at = link.score, license_label, now
             await session.flush()
             if not row.hidden:
                 out.append(link_to_dict(row))
@@ -119,40 +146,69 @@ class LinkResolver:
         rows = await session.execute(select(TrackLink.id).where(TrackLink.track_id == track_id, TrackLink.hidden.is_(True)))
         return {r[0] for r in rows}
 
+    async def _load_hidden(self, track_id: str) -> set[str]:
+        async with self.sessionmaker() as session:
+            return await self._hidden_ids(session, track_id)
+
+    async def _store(self, track_id: str, country: str, links: list[LinkOut]) -> list[dict[str, Any]]:
+        async with self.sessionmaker() as session:
+            return await self._persist(session, track_id, country, links)
+
+    @staticmethod
+    async def _finish(coro: Any) -> Any:
+        """Run a short database step to its end even if the request is cancelled meanwhile.
+
+        A client that hangs up cancels the stream. Cancelling in the middle of a statement
+        leaves the connection unusable: the pool has to destroy it (and logs an error with a
+        traceback for every hang-up). The step is a few milliseconds, so let it finish and
+        hand its connection back cleanly; the cancellation is still raised here.
+        """
+        task = asyncio.ensure_future(coro)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            raise
+
     async def stream(self, track: Track, country: str, variant: str | None = None) -> AsyncIterator[AdapterEvent]:
+        """Events per adapter as they finish.
+
+        No database connection is held while adapters are running (up to several seconds):
+        a session is opened only for the few milliseconds of each read or write. Holding one
+        for the whole stream let a dozen simultaneous streams use up the connection pool.
+        """
         info = track_info(track)
         ctx = ResolveContext(track=info, country=country, variant=variant, http=self.http,
                              cache=self.cache, settings=self.settings)
-        async with self.sessionmaker() as session:
-            hidden = await self._hidden_ids(session, info.id)
-            tasks: dict[asyncio.Task, tuple[Adapter, str]] = {}
-            try:
-                for adapter in self.adapters:
-                    key = self._cache_key(info, country, variant, adapter.name)
-                    cached = await self.cache.get_json(key)
-                    if cached is not None:
-                        yield AdapterEvent(adapter.name, [l for l in cached if l["id"] not in hidden], cached=True)
-                        continue
-                    tasks[asyncio.create_task(self._run(adapter, ctx))] = (adapter, key)
-                pending = set(tasks)
-                while pending:
-                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        adapter, key = tasks[task]
-                        links, degraded = task.result()
-                        rows = await self._persist(session, info.id, country, links)
-                        if degraded:
-                            ttl = self.settings.link_cache_ttl_degraded_s
-                        elif any(l["match"] == EXACT for l in rows):
-                            ttl = self.settings.link_cache_ttl_exact_s
-                        else:
-                            ttl = self.settings.link_cache_ttl_empty_s
-                        await self.cache.set_json(key, rows, ttl)
-                        yield AdapterEvent(adapter.name, rows, degraded=degraded)
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
+        hidden = await self._finish(self._load_hidden(info.id))
+        tasks: dict[asyncio.Task, tuple[Adapter, str]] = {}
+        try:
+            for adapter in self.adapters:
+                key = self._cache_key(info, country, variant, adapter.name)
+                cached = await self.cache.get_json(key)
+                if cached is not None:
+                    yield AdapterEvent(adapter.name, [l for l in cached if l["id"] not in hidden], cached=True)
+                    continue
+                tasks[asyncio.create_task(self._run(adapter, ctx))] = (adapter, key)
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    adapter, key = tasks[task]
+                    links, degraded = task.result()
+                    rows = await self._finish(self._store(info.id, country, links))
+                    if degraded:
+                        ttl = self.settings.link_cache_ttl_degraded_s
+                    elif any(l["match"] == EXACT for l in rows):
+                        ttl = self.settings.link_cache_ttl_exact_s
+                    else:
+                        ttl = self.settings.link_cache_ttl_empty_s
+                    await self.cache.set_json(key, rows, ttl)
+                    yield AdapterEvent(adapter.name, rows, degraded=degraded)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     async def resolve_all(self, track: Track, country: str, variant: str | None = None) -> list[dict[str, Any]]:
         links: list[dict[str, Any]] = []

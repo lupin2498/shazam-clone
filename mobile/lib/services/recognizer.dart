@@ -66,16 +66,23 @@ class ResultHandler {
   Future<ListenOutcome> handle(RecognitionResult r, {required String source}) async {
     switch (r.status) {
       case RecognitionStatus.matched:
-        final top = r.top!;
-        final entry = await history.add(HistoryEntry(
+        final top = r.top;
+        if (top == null) return const NoMatch(); // "matched" without a candidate
+        final entry = HistoryEntry(
           track: top.track,
           source: source,
           createdAt: DateTime.now(),
           recognitionId: r.id,
           flags: top.flags,
           confidence: top.confidence,
-        ));
-        return Matched(r, entry);
+        );
+        try {
+          return Matched(r, await history.add(entry));
+        } catch (e) {
+          // The song was found: a storage problem must not take the result away.
+          debugPrint('history not saved: $e');
+          return Matched(r, entry);
+        }
       case RecognitionStatus.candidates:
         return Candidates(r);
       case RecognitionStatus.noMatch:
@@ -132,7 +139,13 @@ class ListenSession extends ChangeNotifier {
   bool get isClosed => _done.isCompleted;
 
   Future<ListenOutcome> start() async {
-    final started = await native.startRecording(maxSeconds: totalSeconds + 1);
+    bool started;
+    try {
+      started = await native.startRecording(maxSeconds: totalSeconds + 1);
+    } catch (_) {
+      started = false; // permission revoked meanwhile, platform error...
+    }
+    if (isClosed) return done; // cancelled while the microphone was opening
     if (!started) {
       _finish(const Failed(S.micBusy));
       return done;
@@ -160,19 +173,24 @@ class ListenSession extends ChangeNotifier {
   }
 
   Future<void> _sendEarly() async {
+    final RecognitionResult r;
     try {
       final sample = await native.snapshotRecording(maxMs: config.earlyProbeS * 1000);
       if (isClosed || _stopping || sample.rms < config.silenceRms || sample.aac.isEmpty) return;
-      final r = await api.recognize(
+      r = await api.recognize(
           audio: sample.aac, mode: 'auto', source: 'mic', stage: 'early', sessionId: sessionId);
-      if (isClosed || r.status != RecognitionStatus.matched) return;
-      _stopping = true;
-      _ticker?.cancel();
-      await native.cancelRecording();
-      await _complete(r);
     } catch (_) {
-      // The probe is best effort; the full sample decides.
+      return; // The probe is best effort; the full sample decides.
     }
+    if (isClosed || r.status != RecognitionStatus.matched) return;
+    // This probe now ends the session (the ticker is stopped, the full sample will not be
+    // sent): from here on every path must reach _finish, or the screen listens forever.
+    _stopping = true;
+    _ticker?.cancel();
+    try {
+      await native.cancelRecording();
+    } catch (_) {}
+    await _complete(r);
   }
 
   /// Ends listening and sends what was recorded.
@@ -180,15 +198,21 @@ class ListenSession extends ChangeNotifier {
     if (_stopping || isClosed) return;
     _stopping = true;
     _ticker?.cancel();
-    final sample = await native.stopRecording();
-    if (isClosed) return;
-    phase = ListenPhase.searching;
-    notifyListeners();
-    if (sample.rms < config.silenceRms || sample.aac.isEmpty) {
-      _finish(const Silent());
-      return;
+    try {
+      final sample = await native.stopRecording();
+      if (isClosed) return;
+      phase = ListenPhase.searching;
+      notifyListeners();
+      if (sample.rms < config.silenceRms || sample.aac.isEmpty) {
+        _finish(const Silent());
+        return;
+      }
+      await _sendFull(sample.aac);
+    } catch (_) {
+      // Encoder or storage failure. The ticker is already stopped, so nothing else would
+      // ever end the session: report the failure instead of spinning forever.
+      _finish(const Failed(S.genericError));
     }
-    await _sendFull(sample.aac);
   }
 
   Future<void> _sendFull(Uint8List aac) async {
@@ -214,13 +238,19 @@ class ListenSession extends ChangeNotifier {
 
   Future<void> _complete(RecognitionResult r) async {
     if (isClosed) return;
-    _finish(await results.handle(r, source: _source));
+    ListenOutcome outcome;
+    try {
+      outcome = await results.handle(r, source: _source);
+    } catch (_) {
+      outcome = const Failed(S.genericError);
+    }
+    _finish(outcome);
   }
 
   void cancel() {
     if (isClosed) return;
     _ticker?.cancel();
-    unawaited(native.cancelRecording());
+    unawaited(native.cancelRecording().catchError((Object _) {}));
     _finish(const Cancelled());
   }
 

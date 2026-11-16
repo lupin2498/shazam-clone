@@ -40,6 +40,64 @@ class LinksEvent {
   final bool degraded;
 }
 
+/// [source] with a [TimeoutException] (then the end of the stream) when no chunk arrives for
+/// [limit]; the source subscription is cancelled at that point, which releases the connection.
+///
+/// Not [Stream.timeout]: under `fake_async` (widget tests) its pause/resume handling left the
+/// wrapped stream open after the body had ended, so the result screen kept loading.
+Stream<T> stallGuard<T>(Stream<T> source, Duration limit) {
+  late final StreamController<T> out;
+  StreamSubscription<T>? sub;
+  Timer? timer;
+  void arm() {
+    timer?.cancel();
+    timer = Timer(limit, () {
+      final s = sub;
+      sub = null;
+      out.addError(TimeoutException('no data for $limit', limit));
+      unawaited(out.close());
+      unawaited(s?.cancel());
+    });
+  }
+
+  out = StreamController<T>(
+    onListen: () {
+      arm();
+      sub = source.listen(
+        (chunk) {
+          arm();
+          out.add(chunk);
+        },
+        onError: (Object e, StackTrace st) {
+          arm();
+          out.addError(e, st);
+        },
+        onDone: () {
+          timer?.cancel();
+          sub = null;
+          unawaited(out.close());
+        },
+      );
+    },
+    // Paused by a slow reader: the server is not silent, the clock stops.
+    onPause: () {
+      timer?.cancel();
+      sub?.pause();
+    },
+    onResume: () {
+      sub?.resume();
+      if (sub != null) arm();
+    },
+    onCancel: () {
+      timer?.cancel();
+      final s = sub;
+      sub = null;
+      return s?.cancel();
+    },
+  );
+  return out.stream;
+}
+
 /// The app talks only to its own backend (design doc, section 4).
 class ApiClient {
   ApiClient({
@@ -50,6 +108,7 @@ class ApiClient {
     http.Client? client,
     this.appVersion = kAppVersion,
     this.timeout = const Duration(seconds: 25),
+    this.streamStallTimeout = const Duration(seconds: 20),
   }) : _http = client ?? http.Client();
 
   /// Address the app was built with; may be empty.
@@ -61,6 +120,10 @@ class ApiClient {
   final IntegrityService integrity;
   final String appVersion;
   final Duration timeout;
+
+  /// Longest silence accepted on the link stream. The backend bounds every adapter to a few
+  /// seconds, so a longer gap means the connection is dead, not that links are still coming.
+  final Duration streamStallTimeout;
   final http.Client _http;
 
   String get currentBaseUrl => baseUrlOverride?.call() ?? baseUrl;
@@ -95,20 +158,37 @@ class ApiClient {
       throw const ApiException('network', S.networkError);
     } on TimeoutException {
       throw const ApiException('network', S.networkError);
-    } on HandshakeException {
+    } on IOException {
+      // TLS handshake, connection closed half-way...
       throw const ApiException('network', S.networkError);
+    } on FormatException {
+      throw const ApiException('bad_response', S.genericError);
+    } on TypeError {
+      // A 2xx answer that is JSON but not the object the app expects.
+      throw const ApiException('bad_response', S.genericError);
     }
   }
 
+  /// Decoded JSON body of a 2xx answer; every other answer becomes an [ApiException].
+  ///
+  /// Callers only ever see [ApiException]: an HTML error page from a proxy in front of the
+  /// backend (502/503/504) must not surface as a [FormatException] nobody handles.
   dynamic _decode(http.Response resp) {
-    final body = resp.bodyBytes.isEmpty ? null : jsonDecode(utf8.decode(resp.bodyBytes));
-    if (resp.statusCode >= 200 && resp.statusCode < 300) return body;
-    if (body is Map<String, dynamic>) {
-      throw ApiException((body['error'] as String?) ?? 'http_${resp.statusCode}',
-          (body['message'] as String?) ?? S.genericError,
-          statusCode: resp.statusCode);
+    final ok = resp.statusCode >= 200 && resp.statusCode < 300;
+    dynamic body;
+    try {
+      body = resp.bodyBytes.isEmpty ? null : jsonDecode(utf8.decode(resp.bodyBytes));
+    } on FormatException {
+      if (ok) throw ApiException('bad_response', S.genericError, statusCode: resp.statusCode);
     }
-    throw ApiException('http_${resp.statusCode}', S.genericError, statusCode: resp.statusCode);
+    if (ok) return body;
+    final code = body is Map ? body['error'] : null;
+    final message = body is Map ? body['message'] : null;
+    throw ApiException(
+      code is String ? code : 'http_${resp.statusCode}',
+      message is String ? message : (resp.statusCode >= 500 ? S.serverBusy : S.genericError),
+      statusCode: resp.statusCode,
+    );
   }
 
   /// `POST /v1/recognitions`. [stage] is `early` (6 s probe) or `full`.
@@ -148,25 +228,49 @@ class ApiClient {
       throw const ApiException('network', S.networkError);
     }
     if (resp.statusCode != 200) {
-      _decode(await http.Response.fromStream(resp));
-      return;
-    }
-    try {
-      await for (final e in utf8.decoder.bind(resp.stream).transform(const SseParser())) {
-        if (e.event != 'links') continue;
-        final data = jsonDecode(e.data) as Map<String, dynamic>;
-        yield LinksEvent(
-          data['adapter'] as String,
-          ((data['links'] as List?) ?? const []).map((l) => TrackLink.fromJson(l as Map<String, dynamic>)).toList(),
-          cached: (data['cached'] as bool?) ?? false,
-          degraded: (data['degraded'] as bool?) ?? false,
-        );
+      try {
+        _decode(await http.Response.fromStream(resp).timeout(timeout));
+      } on ApiException {
+        rethrow;
+      } on Exception {
+        throw const ApiException('network', S.networkError);
       }
-    } on SocketException {
+      throw ApiException('http_${resp.statusCode}', S.genericError, statusCode: resp.statusCode);
+    }
+    var finished = false;
+    try {
+      // Malformed UTF-8 is replaced, not thrown: one bad byte must not end the stream.
+      final lines = const Utf8Decoder(allowMalformed: true).bind(stallGuard(resp.stream, streamStallTimeout));
+      await for (final e in lines.transform(const SseParser())) {
+        if (e.event == 'done') finished = true;
+        if (e.event != 'links') continue;
+        final LinksEvent event;
+        try {
+          final data = jsonDecode(e.data) as Map<String, dynamic>;
+          event = LinksEvent(
+            data['adapter'] as String,
+            ((data['links'] as List?) ?? const [])
+                .map((l) => TrackLink.fromJson(l as Map<String, dynamic>))
+                .toList(),
+            cached: (data['cached'] as bool?) ?? false,
+            degraded: (data['degraded'] as bool?) ?? false,
+          );
+        } on FormatException {
+          continue; // one unreadable event: keep the links of the other platforms
+        } on TypeError {
+          continue;
+        }
+        yield event;
+      }
+    } on TimeoutException {
+      throw const ApiException('network', S.networkError);
+    } on IOException {
       throw const ApiException('network', S.networkError);
     } on http.ClientException {
       throw const ApiException('network', S.networkError);
     }
+    // The backend always ends with a "done" event: without it the list is incomplete.
+    if (!finished) throw const ApiException('network', S.networkError);
   }
 
   /// Same links in one JSON response (fallback when streaming is not possible).

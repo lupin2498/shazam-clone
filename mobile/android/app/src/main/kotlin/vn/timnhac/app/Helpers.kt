@@ -27,16 +27,22 @@ class PreviewPlayer(private val context: Context) {
     fun play(uri: Uri, startMs: Int, durationMs: Int) {
         stop()
         val p = MediaPlayer()
-        player = p
-        p.setDataSource(context, uri)
-        p.setOnPreparedListener {
-            it.seekTo(startMs)
-            it.start()
-            handler.postDelayed(stopTask, durationMs.toLong())
+        try {
+            p.setDataSource(context, uri)
+            p.setOnPreparedListener {
+                it.seekTo(startMs)
+                it.start()
+                handler.postDelayed(stopTask, durationMs.toLong())
+            }
+            p.setOnCompletionListener { stop() }
+            p.setOnErrorListener { _, _, _ -> stop(); true }
+            p.prepareAsync()
+        } catch (e: Exception) {
+            p.release() // not kept in [player]: nothing else would release it
+            throw e
         }
-        p.setOnCompletionListener { stop() }
-        p.setOnErrorListener { _, _, _ -> stop(); true }
-        p.prepareAsync()
+        // Listeners run on this (main) thread, so none can fire before this assignment.
+        player = p
     }
 
     fun stop() {
