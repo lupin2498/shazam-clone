@@ -29,19 +29,23 @@ class LinkTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final label = linkLabel(link, platform);
+    final offline = link.kind == LinkKind.offlineInApp;
+    // Exact links show the title found on the platform; search and offline entries
+    // show the platform, and the label says what the button does.
+    final title = link.exact && !offline && link.title != null ? link.title! : platform.name;
     final details = <String>[
-      platform.name,
-      if (link.durationMs != null) formatDuration(link.durationMs),
-      if (link.kind == LinkKind.offlineInApp && platform.offlineNote != null) platform.offlineNote!,
+      if (title != platform.name) platform.name,
+      if (link.durationMs != null && !offline) formatDuration(link.durationMs),
+      if (!link.exact && !offline && link.title != null) '“${link.title}”',
+      if (offline && platform.offlineNote != null) platform.offlineNote!,
       if (link.license != null && !label.contains(link.license!)) link.license!,
     ];
-    final title = link.kind == LinkKind.offlineInApp
-        ? '${S.openAppOffline} ${platform.name}'
-        : (link.exact ? (link.title ?? platform.name) : S.searchOn(platform.name));
     return ListTile(
       leading: PlatformBadge(platform),
       title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
-      subtitle: Text(details.join(' · '), maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: details.isEmpty
+          ? null
+          : Text(details.join(' · '), maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: onOpen,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
