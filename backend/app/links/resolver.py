@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..cache import Cache
 from ..config import Settings
 from ..ids import new_id
+from ..logsafe import redact
 from ..models import Track, TrackLink
 from .adapters import build_adapters
 from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo
@@ -92,7 +93,7 @@ class LinkResolver:
             raise
         except Exception as exc:  # noqa: BLE001 - any adapter failure degrades to its fallback
             breaker.failure()
-            log.warning("adapter %s failed: %r", adapter.name, exc)
+            log.warning("adapter %s failed: %s", adapter.name, redact(repr(exc)))
             return adapter.fallback(ctx), True
 
     async def _persist(self, session: AsyncSession, track_id: str, country: str, links: list[LinkOut]) -> list[dict[str, Any]]:
