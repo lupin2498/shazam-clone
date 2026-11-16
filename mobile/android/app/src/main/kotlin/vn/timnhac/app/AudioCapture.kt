@@ -35,6 +35,7 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
 
     /** Starts capturing up to [maxSeconds] seconds. Caller must hold RECORD_AUDIO. */
     @SuppressLint("MissingPermission")
+    @Synchronized
     fun start(maxSeconds: Int): Boolean {
         stop()
         val minBuffer = AudioRecord.getMinBufferSize(
@@ -105,7 +106,8 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
         buffer.copyOf(min(length, (sampleRate.toLong() * maxMs / 1000).toInt()))
     }
 
-    /** Stops the microphone and returns everything captured. */
+    /** Stops the microphone and returns everything captured. Called from the main and worker threads. */
+    @Synchronized
     fun stop(): ShortArray {
         running = false
         thread?.join(1000)
@@ -122,6 +124,7 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
         return synchronized(lock) { buffer.copyOf(length) }
     }
 
+    @Synchronized
     fun cancel() {
         stop()
         synchronized(lock) { length = 0 }

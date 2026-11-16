@@ -33,15 +33,15 @@ class _TrimScreenState extends State<TrimScreen> {
   bool _playing = false;
   String? _error;
   Timer? _previewTimer;
-  bool _loaded = false;
+  AppServices? _scope;
 
-  AppServices get _services => AppScope.of(context);
+  AppServices get _services => _scope!;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_loaded) return;
-    _loaded = true;
+    if (_scope != null) return;
+    _scope = AppScope.of(context);
     _probe();
   }
 
