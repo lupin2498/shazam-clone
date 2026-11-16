@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tim_nhac/models/app_config.dart';
+import 'package:tim_nhac/models/history_entry.dart';
 import 'package:tim_nhac/models/recognition.dart';
 import 'package:tim_nhac/models/track.dart';
 import 'package:tim_nhac/models/track_link.dart';
@@ -103,6 +104,30 @@ void main() {
     test('Vietnamese folding for history search', () {
       expect(foldVietnamese('Nơi Này Có Anh – Sơn Tùng'), 'noi nay co anh – son tung');
       expect(foldVietnamese('ĐEN VÂU Hồ Ngọc Hà Mỹ Tâm Ưng Hoàng Phúc'), 'den vau ho ngoc ha my tam ung hoang phuc');
+    });
+
+    test('Vietnamese folding also handles decomposed (NFD) text', () {
+      // "Nơi Này Có Anh" as macOS/iOS file names and some keyboards write it: base letter
+      // followed by combining marks (U+031B horn, U+0300 grave, U+0301 acute, U+0323 dot).
+      const nfd = 'Nơi Này Có Anh';
+      expect(foldVietnamese(nfd), 'noi nay co anh');
+      expect(foldVietnamese('Hận'), 'han'); // "Hận" with marks in any order
+      expect(foldVietnamese('ớ'), 'o'); // precomposed "ơ" + combining acute
+    });
+
+    test('history search matches NFC queries against NFD titles and the reverse', () async {
+      // No album and an unrelated artist: the title is the only field that can match.
+      HistoryEntry only(String id, String title) => HistoryEntry(
+            track: Track.fromJson({...trackJson(id: id, title: title), 'album': null, 'artists': ['X']}),
+            source: 'file',
+            createdAt: DateTime(2026, 11, 16),
+          );
+      final repo = HistoryRepository(MemoryHistoryDb());
+      await repo.add(only('trk_nfd', 'Nơi Này Có Anh'));
+      await repo.add(only('trk_nfc', 'Lạc Trôi'));
+      expect(repo.search('nơi này').map((e) => e.track.id), ['trk_nfd']);
+      expect(repo.search('noi nay co anh').map((e) => e.track.id), ['trk_nfd']);
+      expect(repo.search('Lạc Trôi').map((e) => e.track.id), ['trk_nfc']);
     });
 
     test('integrity request hash matches the backend format', () {

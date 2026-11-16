@@ -267,11 +267,18 @@ class HistoryRepository extends ChangeNotifier {
 const _vnFrom = 'àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ';
 const _vnTo = 'aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd';
 
+/// Combining marks (U+0300–U+036F): what decomposed (NFD) text puts after the base letter.
+bool _isCombiningMark(int rune) => rune >= 0x0300 && rune <= 0x036F;
+
 /// Lower-case and strip Vietnamese diacritics: "Nơi Này Có Anh" → "noi nay co anh".
+///
+/// Works on precomposed (NFC) and decomposed (NFD) text alike: titles from file names on
+/// iOS/macOS and some keyboards arrive as base letter + combining marks.
 String foldVietnamese(String input) {
   final lower = input.toLowerCase();
   final buffer = StringBuffer();
   for (final rune in lower.runes) {
+    if (_isCombiningMark(rune)) continue;
     final ch = String.fromCharCode(rune);
     final i = _vnFrom.indexOf(ch);
     buffer.write(i >= 0 ? _vnTo[i] : ch);
