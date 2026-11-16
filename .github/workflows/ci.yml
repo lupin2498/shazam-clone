@@ -1,8 +1,29 @@
 name: CI
 
+# Every run tests the backend and the app and builds the installers:
+#   * tim-nhac-android  release APKs, one per ABI
+#   * tim-nhac-ios      unsigned IPA (sign it with Sideloadly/AltStore or your own certificate)
+# Download them from the run's "Artifacts" section.
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Địa chỉ backend ghi vào bộ cài (https://...). Để trống: dùng biến API_BASE_URL của repo, nếu có."
+        required: false
+        default: ""
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A push run builds the installers of its commit, so it is left to finish and newer
+  # pushes queue behind it. Superseded pull request runs are cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FLUTTER_VERSION: "3.50.0"
+  # Backend address compiled into the installers; empty keeps the default of mobile/lib/config.dart.
+  API_BASE_URL: ${{ inputs.api_base_url || vars.API_BASE_URL }}
 
 jobs:
   backend:
@@ -31,9 +52,161 @@ jobs:
           java-version: "21"
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.50.0"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
+          cache: true
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: flutter build apk --debug
+      - name: Release signing key (optional)
+        # Without these secrets the APKs are signed with the runner's debug key: fine for
+        # trying the app, but every run then has a different signature.
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret: using the debug key."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
+          {
+            echo "storeFile=upload-keystore.jks"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > android/key.properties
+      - name: Build release APKs
+        run: |
+          defines=()
+          if [ -n "$API_BASE_URL" ]; then defines+=("--dart-define=API_BASE_URL=$API_BASE_URL"); fi
+          flutter build apk --release --split-per-abi "${defines[@]}"
+          mkdir -p build/installers
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "build/installers/tim-nhac-$abi.apk"
+          done
+          ls -l build/installers
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tim-nhac-android
+          path: mobile/build/installers/*.apk
+          if-no-files-found: error
+
+  android-device:
+    name: android (emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: flutter pub get
+        working-directory: mobile
+      - name: Platform channels on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: aosp_atd
+          disable-animations: true
+          working-directory: mobile
+          # Installing first lets the microphone permission be granted, so the capture test
+          # records instead of only checking the permission error.
+          script: |
+            flutter build apk --debug --target-platform android-x64
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            adb shell pm grant vn.timnhac.app android.permission.RECORD_AUDIO
+            flutter test integration_test/native_bridge_test.dart -d emulator-5554
+
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Build release app (unsigned)
+        run: |
+          xcodebuild -version
+          defines=()
+          if [ -n "$API_BASE_URL" ]; then defines+=("--dart-define=API_BASE_URL=$API_BASE_URL"); fi
+          flutter build ios --release --no-codesign "${defines[@]}"
+      - name: Package unsigned IPA
+        run: |
+          rm -rf build/installers && mkdir -p build/installers/Payload
+          cp -R build/ios/iphoneos/Runner.app build/installers/Payload/
+          (cd build/installers && zip -qry tim-nhac-unsigned.ipa Payload && rm -rf Payload)
+          ls -l build/installers
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tim-nhac-ios
+          path: mobile/build/installers/tim-nhac-unsigned.ipa
+          if-no-files-found: error
+      - name: Pick a simulator
+        if: ${{ !cancelled() }}
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted((r for r in devices if "iOS" in r), reverse=True):
+              for device in devices[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("no iPhone simulator available")
+          ')
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+      - name: Native unit tests (XCTest on the simulator)
+        if: ${{ !cancelled() }}
+        run: |
+          flutter build ios --config-only --debug --simulator
+          log="$RUNNER_TEMP/xcodebuild-test.log"
+          # The full log is tens of thousands of lines: show only what matters, as it happens.
+          # A test that hangs fails after two minutes instead of blocking the job.
+          # No parallel testing: it clones the simulator, which shuts the booted one down
+          # and leaves nothing for the next step to run on.
+          set -o pipefail
+          status=0
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 120 2>&1 \
+            | tee "$log" \
+            | { grep --line-buffered -iE "error:|test (case|suite) |executed [0-9]+ test|\*\* |nearly matches" || true; } \
+            || status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -60 "$log"
+            exit "$status"
+          fi
+      - name: Platform channels on the simulator
+        if: ${{ !cancelled() }}
+        run: |
+          # xcodebuild may have shut the simulator down; Flutter only sees booted ones.
+          xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b > /dev/null
+          # Lets the capture test run instead of only checking the permission error.
+          xcrun simctl privacy "$SIMULATOR_UDID" grant microphone vn.timnhac.app || true
+          flutter test integration_test/native_bridge_test.dart -d "$SIMULATOR_UDID"

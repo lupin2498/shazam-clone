@@ -11,6 +11,7 @@ import '../models/recognition.dart';
 import '../models/track.dart';
 import '../models/track_link.dart';
 import 'integrity.dart';
+import 'server_address.dart';
 import 'sse.dart';
 
 class ApiException implements Exception {
@@ -101,6 +102,7 @@ Stream<T> stallGuard<T>(Stream<T> source, Duration limit) {
 class ApiClient {
   ApiClient({
     required this.baseUrl,
+    this.baseUrlOverride,
     required this.deviceId,
     required this.integrity,
     http.Client? client,
@@ -109,7 +111,11 @@ class ApiClient {
     this.streamStallTimeout = const Duration(seconds: 20),
   }) : _http = client ?? http.Client();
 
+  /// Address the app was built with; may be empty.
   final String baseUrl;
+
+  /// Address chosen at run time ("Cài đặt → Máy chủ"); wins over [baseUrl] when not null.
+  final String? Function()? baseUrlOverride;
   final String Function() deviceId;
   final IntegrityService integrity;
   final String appVersion;
@@ -120,8 +126,15 @@ class ApiClient {
   final Duration streamStallTimeout;
   final http.Client _http;
 
-  Uri _uri(String path, [Map<String, String>? query]) =>
-      Uri.parse('$baseUrl$path').replace(queryParameters: query?.isEmpty ?? true ? null : query);
+  String get currentBaseUrl => baseUrlOverride?.call() ?? baseUrl;
+
+  /// Throws [ApiException] `server_address` when no usable backend address is configured
+  /// (none at all, or plain HTTP to a public host in a release build).
+  Uri _uri(String path, [Map<String, String>? query]) {
+    final base = currentBaseUrl;
+    if (!ServerAddress.isAllowed(base)) throw const ApiException('server_address', S.serverNotAllowed);
+    return Uri.parse('$base$path').replace(queryParameters: query?.isEmpty ?? true ? null : query);
+  }
 
   Future<Map<String, String>> _headers([List<String>? integrityParts]) async {
     final id = deviceId();

@@ -30,15 +30,18 @@ class ConfigRepository extends ValueNotifier<AppConfig> {
     }
   }
 
-  Future<void> refresh() async {
+  /// Returns whether the backend answered with a usable config.
+  Future<bool> refresh() async {
     try {
       final json = await _api.fetchConfigJson();
       final config = AppConfig.fromJson(json);
-      if (config.platforms.isEmpty) return;
+      if (config.platforms.isEmpty) return false;
       await _settings.saveConfig(json);
       value = config;
+      return true;
     } catch (_) {
       // Offline or server down: keep the cached/default config.
+      return false;
     }
   }
 }
@@ -73,7 +76,12 @@ class AppServices {
     final bridge = native ?? MethodChannelNativeBridge();
     final settings = await SettingsStore.load();
     final integrity = IntegrityService(bridge);
-    final api = ApiClient(baseUrl: kApiBaseUrl, deviceId: () => settings.deviceId, integrity: integrity);
+    final api = ApiClient(
+      baseUrl: defaultApiBaseUrl(),
+      baseUrlOverride: () => settings.serverOverride,
+      deviceId: () => settings.deviceId,
+      integrity: integrity,
+    );
     HistoryDb historyDb;
     try {
       historyDb = db ?? await SqliteHistoryDb.open();
@@ -97,10 +105,17 @@ class AppServices {
   }
 
   Future<void> _warmUp() async {
-    await config.refresh();
+    await reconnect();
+    pending.start();
+  }
+
+  /// Loads `/v1/config` and what depends on it; also called after the backend address
+  /// changed in "Cài đặt → Máy chủ". Returns whether the backend answered.
+  Future<bool> reconnect() async {
+    final ok = await config.refresh();
     await integrity.prepare(config.value.cloudProjectNumber);
     await refreshInstalledApps();
-    pending.start();
+    return ok;
   }
 
   Future<void> refreshInstalledApps() async {
