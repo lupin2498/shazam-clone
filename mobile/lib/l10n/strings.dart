@@ -47,6 +47,8 @@ abstract final class S {
   static const networkError = 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.';
   static const genericError = 'Đã có lỗi xảy ra. Vui lòng thử lại.';
   static const serverBusy = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+  static const appOutdated = 'Phiên bản app đã cũ, vui lòng cập nhật lên bản mới nhất.';
+  static const ok = 'OK';
   static const candidatesTitle = 'Có thể là một trong các bài sau';
   static const candidatesHint = 'Chọn bài đúng để xem link.';
   static String confidence(double c) => 'Độ tin cậy ${(c * 100).round()}%';

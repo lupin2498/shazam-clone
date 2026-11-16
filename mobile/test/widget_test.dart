@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:material_ui/material_ui.dart';
 import 'package:tim_nhac/app.dart';
+import 'package:tim_nhac/models/app_config.dart';
 import 'package:tim_nhac/models/history_entry.dart';
 import 'package:tim_nhac/models/track.dart';
 import 'package:tim_nhac/screens/result_screen.dart';
@@ -58,6 +59,31 @@ void main() {
     await tester.tap(find.text('Ngân nga'));
     await tester.pump();
     expect(find.text('Chạm rồi ngân nga hoặc huýt sáo'), findsOneWidget);
+  });
+
+  testWidgets('"app đã cũ" banner: neutral wording, OK hides it for this run', (tester) async {
+    tester.view.physicalSize = const Size(720, 1280);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final s = await fakeServices(handler: _backend);
+    s.config.value = AppConfig(platforms: AppConfig.defaults.platforms, minAppVersion: '99.0.0');
+    await tester.pumpWidget(TimNhacApp(services: s));
+    await tester.pump();
+
+    final banner = find.byType(MaterialBanner);
+    expect(banner, findsOneWidget);
+    // The app also ships on iOS: the store is not always Google Play.
+    expect(find.textContaining('Google Play'), findsNothing);
+    expect(find.textContaining('Phiên bản app đã cũ'), findsOneWidget);
+
+    await tester.tap(find.descendant(of: banner, matching: find.text('OK')));
+    await tester.pump();
+    expect(find.byType(MaterialBanner), findsNothing);
+
+    // A later config refresh (same minimum) does not bring it back during this run.
+    s.config.value = AppConfig(platforms: AppConfig.defaults.platforms, minAppVersion: '99.0.0');
+    await tester.pump();
+    expect(find.byType(MaterialBanner), findsNothing);
   });
 
   testWidgets('result screen lists every link in "Nghe" and "Tải/Mua" and saves them', (tester) async {
