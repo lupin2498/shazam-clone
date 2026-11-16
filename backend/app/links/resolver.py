@@ -24,9 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..cache import Cache
 from ..config import Settings
+from ..db import insert_if_absent
 from ..ids import new_id
 from ..logsafe import redact
 from ..models import Track, TrackLink
+from ..services.tracks import positive_int32
 from .adapters import build_adapters
 from .base import EXACT, Adapter, LinkOut, QuotaExhausted, ResolveContext, TrackInfo, safe_link_url
 from .circuit import BreakerRegistry
@@ -123,16 +125,17 @@ class LinkResolver:
         out: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
         for link in links:
-            row = (await session.execute(select(TrackLink).where(
-                TrackLink.track_id == track_id, TrackLink.country == country, TrackLink.platform == link.platform,
-                TrackLink.kind == link.kind, TrackLink.url == link.url,
-            ))).scalar_one_or_none()
-            if row is None:
-                row = TrackLink(id=new_id("lnk"), track_id=track_id, country=country, platform=link.platform,
-                                kind=link.kind, url=link.url)
-                session.add(row)
-            row.match, row.title, row.duration_ms = link.match, link.title, link.duration_ms
-            row.score, row.license, row.verified_at = link.score, link.license, now
+            identity = dict(track_id=track_id, country=country, platform=link.platform, kind=link.kind, url=link.url)
+            duration_ms = positive_int32(link.duration_ms)
+            license_label = link.license[:128] if link.license else None
+            # Two streams for the same track may store the same link at the same moment: the
+            # second INSERT must not break the unique constraint (and with it the whole stream).
+            await insert_if_absent(session, TrackLink, dict(
+                identity, id=new_id("lnk"), match=link.match, title=link.title, duration_ms=duration_ms,
+                score=link.score, license=license_label, verified_at=now), list(identity))
+            row = (await session.execute(select(TrackLink).filter_by(**identity))).scalar_one()
+            row.match, row.title, row.duration_ms = link.match, link.title, duration_ms
+            row.score, row.license, row.verified_at = link.score, license_label, now
             await session.flush()
             if not row.hidden:
                 out.append(link_to_dict(row))
