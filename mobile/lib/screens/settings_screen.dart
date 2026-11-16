@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../config.dart';
 import '../l10n/strings.dart';
 import '../services/app_services.dart';
+import '../services/server_address.dart';
 import '../widgets/common.dart';
 
 const kCountries = {
@@ -108,6 +111,12 @@ class SettingsScreen extends StatelessWidget {
                 leading: const Icon(Icons.speed),
                 title: Text(S.quota(config.quotaPerDay)),
               ),
+              ListTile(
+                leading: const Icon(Icons.dns_outlined),
+                title: const Text(S.server),
+                subtitle: Text(serverLabel(services)),
+                onTap: () => _editServer(context),
+              ),
               const Divider(height: 32),
               ListTile(
                 leading: const Icon(Icons.privacy_tip_outlined),
@@ -125,7 +134,7 @@ class SettingsScreen extends StatelessWidget {
                 icon: const Icon(Icons.info_outline),
                 applicationName: S.appName,
                 applicationVersion: kAppVersion,
-                aboutBoxChildren: const [Text('Máy chủ: $kApiBaseUrl')],
+                aboutBoxChildren: [Text('${S.server}: ${serverLabel(services)}')],
                 child: const Text(S.about),
               ),
             ],
@@ -133,6 +142,30 @@ class SettingsScreen extends StatelessWidget {
         },
       ),
     );
+  }
+
+  /// Address shown in the list: the user's choice, the built-in one, or "not set".
+  static String serverLabel(AppServices services) {
+    final url = services.api.currentBaseUrl;
+    if (url.isEmpty) return S.serverUnset;
+    return services.settings.serverOverride == null ? S.serverDefault(url) : url;
+  }
+
+  Future<void> _editServer(BuildContext context) async {
+    final services = AppScope.of(context);
+    // null: cancelled; empty: back to the built-in address; otherwise the validated address.
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (_) => ServerDialog(
+        initial: services.api.currentBaseUrl,
+        canReset: services.settings.serverOverride != null,
+      ),
+    );
+    if (choice == null) return;
+    await services.settings.setServerOverride(choice.isEmpty ? null : choice);
+    final connected = await services.reconnect();
+    if (connected) unawaited(services.pending.process());
+    if (context.mounted) showSnack(context, connected ? S.serverConnected : S.serverSavedOffline);
   }
 
   Future<void> _clear(BuildContext context) async {
@@ -152,6 +185,72 @@ class SettingsScreen extends StatelessWidget {
     await services.history.clearAll();
     await services.settings.reset();
     if (context.mounted) showSnack(context, S.deleted);
+  }
+}
+
+/// "Máy chủ": the backend address, checked by [ServerAddress.parse] before it is accepted.
+class ServerDialog extends StatefulWidget {
+  const ServerDialog({super.key, required this.initial, required this.canReset});
+
+  final String initial;
+
+  /// Whether "Mặc định" (drop the user's choice) is offered.
+  final bool canReset;
+
+  @override
+  State<ServerDialog> createState() => _ServerDialogState();
+}
+
+class _ServerDialogState extends State<ServerDialog> {
+  late final TextEditingController _controller = TextEditingController(text: widget.initial);
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    try {
+      Navigator.pop(context, ServerAddress.parse(_controller.text));
+    } on ServerAddressException catch (e) {
+      setState(() => _error = e.message);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text(S.server),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(S.serverHint),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            decoration: InputDecoration(hintText: 'https://', errorText: _error, errorMaxLines: 4),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            onSubmitted: (_) => _save(),
+          ),
+        ],
+      ),
+      actions: [
+        if (widget.canReset)
+          TextButton(onPressed: () => Navigator.pop(context, ''), child: const Text(S.serverUseDefault)),
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text(S.cancel)),
+        FilledButton(onPressed: _save, child: const Text(S.save)),
+      ],
+    );
   }
 }
 

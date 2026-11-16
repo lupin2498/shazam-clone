@@ -18,6 +18,7 @@ class SettingsStore extends ChangeNotifier {
   static const _kConfig = 'config_json';
   static const _kMicExplained = 'mic_explained';
   static const _kNotificationsAsked = 'notifications_asked';
+  static const _kServer = 'server_url';
 
   static Future<SettingsStore> load() async => SettingsStore(await SharedPreferences.getInstance());
 
@@ -61,6 +62,21 @@ class SettingsStore extends ChangeNotifier {
   }
 
   Future<void> saveConfig(Map<String, dynamic> json) => _prefs.setString(_kConfig, jsonEncode(json));
+
+  /// Backend address chosen in "Cài đặt → Máy chủ" (already validated by `ServerAddress.parse`);
+  /// null means the address the app was built with. Read by `ApiClient.currentBaseUrl`.
+  String? get serverOverride => _prefs.getString(_kServer);
+
+  Future<void> setServerOverride(String? url) async {
+    if (url == null) {
+      await _prefs.remove(_kServer);
+    } else {
+      await _prefs.setString(_kServer, url);
+    }
+    // The cached /v1/config belongs to the previous server.
+    await _prefs.remove(_kConfig);
+    notifyListeners();
+  }
 
   bool get micExplained => _prefs.getBool(_kMicExplained) ?? false;
 

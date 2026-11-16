@@ -122,6 +122,17 @@ abstract final class S {
   static const privacy = 'Chính sách riêng tư';
   static const about = 'Thông tin';
   static String quota(int n) => 'Tối đa $n lượt nhận diện mỗi ngày';
+  static const server = 'Máy chủ';
+  static const serverUnset = 'Chưa đặt địa chỉ';
+  static String serverDefault(String url) => '$url (mặc định)';
+  static const serverHint =
+      'Địa chỉ backend của Tìm Nhạc, ví dụ https://api.example.com. '
+      'Máy chủ trong mạng nội bộ có thể dùng http://, ví dụ http://192.168.1.10:8000.';
+  static const serverUseDefault = 'Mặc định';
+  static const save = 'Lưu';
+  static const serverConnected = 'Đã kết nối máy chủ';
+  static const serverSavedOffline = 'Đã lưu địa chỉ, nhưng chưa kết nối được máy chủ';
+  static const serverNotAllowed = 'Chưa có địa chỉ máy chủ hợp lệ. Vào Cài đặt → Máy chủ để nhập.';
 
   // Notifications
   static String notifyMatched(String title, String artist) => '$title — $artist';

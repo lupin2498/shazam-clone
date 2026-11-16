@@ -177,6 +177,7 @@ Future<AppServices> fakeServices({
   final integrity = IntegrityService(bridge);
   final api = ApiClient(
     baseUrl: 'http://test',
+    baseUrlOverride: () => settings.serverOverride,
     deviceId: () => settings.deviceId,
     integrity: integrity,
     client: MockClient(handler),
