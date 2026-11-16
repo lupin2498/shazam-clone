@@ -14,6 +14,7 @@ class Cache(Protocol):
     async def set(self, key: str, value: str, ttl_s: int) -> None: ...
     async def set_nx(self, key: str, value: str, ttl_s: int) -> bool: ...
     async def incr(self, key: str, ttl_s: int) -> int: ...
+    async def decr(self, key: str) -> int: ...
     async def delete(self, key: str) -> None: ...
     async def close(self) -> None: ...
 
@@ -61,11 +62,27 @@ class MemoryCache:
         self._data[key] = (str(value), expires)
         return value
 
+    async def decr(self, key: str) -> int:
+        """Decrement a counter, never below zero and without touching its expiry."""
+        current = self._alive(key)
+        if current is None or int(current) <= 0:
+            return 0
+        value = int(current) - 1
+        self._data[key] = (str(value), self._data[key][1])
+        return value
+
     async def delete(self, key: str) -> None:
         self._data.pop(key, None)
 
     async def close(self) -> None:
         self._data.clear()
+
+
+_DECR_FLOOR = """
+local v = tonumber(redis.call('GET', KEYS[1]) or '0')
+if v <= 0 then return 0 end
+return redis.call('DECR', KEYS[1])
+"""
 
 
 class RedisCache:
@@ -96,6 +113,11 @@ class RedisCache:
         pipe.expire(key, ttl_s, nx=True)
         value, _ = await pipe.execute()
         return int(value)
+
+    async def decr(self, key: str) -> int:
+        # One round trip, atomic on the server: a missing or zero counter stays as it is
+        # (a bare DECR would create "-1" with no expiry).
+        return int(await self._r.eval(_DECR_FLOOR, 1, key))
 
     async def delete(self, key: str) -> None:
         await self._r.delete(key)
