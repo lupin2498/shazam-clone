@@ -48,14 +48,20 @@ class _TrimScreenState extends State<TrimScreen> {
   @override
   void dispose() {
     _previewTimer?.cancel();
-    if (_playing) _services.native.previewStop();
+    if (_playing) _stopPreviewQuietly(_services.native);
     super.dispose();
+  }
+
+  /// Stops "Nghe thử" without letting a platform error escape (nobody awaits it).
+  static void _stopPreviewQuietly(NativeBridge native) {
+    unawaited(native.previewStop().catchError((Object _) {}));
   }
 
   Future<void> _probe() async {
     final sample = _services.config.value.sample;
     try {
       final probe = await _services.native.probeAudio(widget.file.uri);
+      if (!mounted) return; // left while a large or remote file was being read
       final duration = probe.durationMs;
       if (duration < 3000) throw StateError('too short');
       final length = min(sample.fileDefaultS * 1000, duration);
@@ -76,12 +82,26 @@ class _TrimScreenState extends State<TrimScreen> {
     final native = _services.native;
     if (_playing) {
       _previewTimer?.cancel();
-      await native.previewStop();
-      setState(() => _playing = false);
+      try {
+        await native.previewStop();
+      } catch (_) {
+        // The player is gone or broken: either way it is not playing for this screen any more.
+      }
+      if (mounted) setState(() => _playing = false);
       return;
     }
-    final ok = await native.previewPlay(widget.file.uri, startMs: _startMs, durationMs: _lengthMs);
-    if (!ok || !mounted) return;
+    final bool ok;
+    try {
+      ok = await native.previewPlay(widget.file.uri, startMs: _startMs, durationMs: _lengthMs);
+    } catch (_) {
+      return;
+    }
+    if (!mounted) {
+      // Left while the platform was starting the player: dispose() saw _playing == false.
+      if (ok) _stopPreviewQuietly(native);
+      return;
+    }
+    if (!ok) return;
     setState(() => _playing = true);
     _previewTimer = Timer(Duration(milliseconds: _lengthMs), () {
       if (mounted) setState(() => _playing = false);
@@ -90,6 +110,7 @@ class _TrimScreenState extends State<TrimScreen> {
 
   Future<void> _recognize() async {
     if (_playing) await _togglePreview();
+    if (!mounted) return;
     setState(() => _busy = true);
     final s = _services;
     try {
