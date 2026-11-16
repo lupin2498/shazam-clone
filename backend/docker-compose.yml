@@ -1,0 +1,33 @@
+# Local stack: API + PostgreSQL + Redis.  Copy .env.example to .env first.
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://timnhac:timnhac@db:5432/timnhac
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: timnhac
+      POSTGRES_PASSWORD: timnhac
+      POSTGRES_DB: timnhac
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timnhac"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+volumes:
+  pgdata:
