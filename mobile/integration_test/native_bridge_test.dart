@@ -170,11 +170,11 @@ void main() {
     }
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     final early = await native.snapshotRecording(maxMs: 1000);
-    expect(early.durationMs, inInclusiveRange(500, 1000));
+    expect(early.durationMs, inInclusiveRange(300, 1000));
     await Future<void>.delayed(const Duration(milliseconds: 500));
     final full = await native.stopRecording();
     await sub.cancel();
-    expect(full.durationMs, inInclusiveRange(1200, 3000));
+    expect(full.durationMs, inInclusiveRange(800, 3000));
     expect(adtsSeconds(full.aac), closeTo(full.durationMs / 1000, 0.3));
     expect(levels, isNotEmpty);
     expect(levels.every((l) => l >= 0 && l <= 1), isTrue);

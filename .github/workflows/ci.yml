@@ -122,7 +122,13 @@ jobs:
           target: aosp_atd
           disable-animations: true
           working-directory: mobile
-          script: flutter test integration_test/native_bridge_test.dart -d emulator-5554
+          # Installing first lets the microphone permission be granted, so the capture test
+          # records instead of only checking the permission error.
+          script: |
+            flutter build apk --debug --target-platform android-x64
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            adb shell pm grant vn.timnhac.app android.permission.RECORD_AUDIO
+            flutter test integration_test/native_bridge_test.dart -d emulator-5554
 
   ios:
     runs-on: macos-latest
