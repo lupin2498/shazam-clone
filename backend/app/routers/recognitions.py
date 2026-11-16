@@ -20,7 +20,7 @@ from ..schemas import CandidateOut, RecognitionOut, RecognitionReportIn, TrackOu
 from ..security.integrity import request_hash, sha256_hex
 from ..security.quota import consume, mark_served, refund
 from ..services.container import Services
-from ..services.tracks import upsert_track
+from ..services.tracks import lock_tracks, upsert_track
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["recognitions"])
@@ -94,6 +94,7 @@ async def create_recognition(
     session.add(rec)
     await session.flush()
     candidates: list[CandidateOut] = []
+    await lock_tracks(session, [m.track for m in outcome.matches])
     for rank, (match, match_flags) in enumerate(zip(outcome.matches, flags), start=1):
         track = await upsert_track(session, match.track)
         session.add(Candidate(recognition_id=rec.id, track_id=track.id, confidence=match.confidence,

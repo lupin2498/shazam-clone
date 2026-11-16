@@ -12,7 +12,7 @@ from ..errors import ApiError
 from ..schemas import SearchOut, TrackOut
 from ..security.integrity import request_hash
 from ..services.container import Services
-from ..services.tracks import upsert_track
+from ..services.tracks import lock_tracks, upsert_track
 
 router = APIRouter(prefix="/v1", tags=["search"])
 
@@ -35,6 +35,7 @@ async def search(
     metas = await services.catalog.search(q.strip(), country.upper(), limit)
     tracks = []
     seen: set[str] = set()
+    await lock_tracks(session, metas)
     for meta in metas:
         track = await upsert_track(session, meta)
         if track.id not in seen:

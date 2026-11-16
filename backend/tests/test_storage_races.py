@@ -16,7 +16,7 @@ from app.links.circuit import BreakerRegistry
 from app.links.resolver import LinkResolver
 from app.models import Track, TrackLink
 from app.recognition.base import TrackMeta
-from app.services.tracks import upsert_track
+from app.services.tracks import lock_tracks, upsert_track
 from app.text import match_key
 
 
@@ -110,6 +110,29 @@ async def test_link_persist_survives_a_concurrent_insert_of_the_same_link(settin
             assert (await s.execute(select(func.count()).select_from(TrackLink))).scalar_one() == 1
     finally:
         await db.dispose()
+
+
+class RecordingSession:
+    """Just enough of a session to see what ``lock_tracks`` sends to PostgreSQL."""
+
+    def __init__(self, dialect: str):
+        self.bind = type("Bind", (), {"dialect": type("Dialect", (), {"name": dialect})()})()
+        self.keys: list[str] = []
+
+    async def execute(self, statement, params=None):
+        assert "pg_advisory_xact_lock" in str(statement)
+        self.keys.append(params["key"])
+
+
+async def test_lock_tracks_takes_each_identity_once_in_sorted_order():
+    metas = [TrackMeta(title="Zebra", artists=["B"]), TrackMeta(title="Alpha", artists=["A"], isrc="us-rc1-76-07839"),
+             TrackMeta(title="zebra (Official Video)", artists=["b"]), TrackMeta(title="Alpha", artists=["A"])]
+    pg = RecordingSession("postgresql")
+    await lock_tracks(pg, metas)
+    assert pg.keys == ["USRC17607839", "alpha|a", "zebra|b"]
+    sqlite = RecordingSession("sqlite")
+    await lock_tracks(sqlite, metas)
+    assert sqlite.keys == []
 
 
 # --- values that do not fit the PostgreSQL columns (SQLite does not check lengths) -------------

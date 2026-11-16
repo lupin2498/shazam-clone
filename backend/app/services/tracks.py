@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import insert_if_absent
@@ -42,6 +43,22 @@ def positive_int32(value: object) -> int | None:
 
 def _short(value: object, limit: int) -> str | None:
     return str(value)[:limit] if value else None
+
+
+async def lock_tracks(session: AsyncSession, metas: Iterable[TrackMeta]) -> None:
+    """Make concurrent requests store the same recordings one after the other (PostgreSQL).
+
+    Tracks without an ISRC are de-duplicated by name, which no unique constraint backs:
+    two devices recognising the same new song at the same moment each saw "not stored yet"
+    and each created a row. The transaction-scoped advisory locks are taken in sorted order
+    (no deadlock between requests that share several tracks) and end with the transaction.
+    Call it once, before the ``upsert_track`` calls of a request.
+    """
+    if session.bind.dialect.name != "postgresql":
+        return
+    keys = sorted({normalize_isrc(m.isrc) or match_key(m.title, m.artists) for m in metas})
+    for key in keys:
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
 
 
 async def upsert_track(session: AsyncSession, meta: TrackMeta) -> Track:
