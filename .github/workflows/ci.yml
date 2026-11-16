@@ -184,13 +184,19 @@ jobs:
         run: |
           flutter build ios --config-only --debug --simulator
           log="$RUNNER_TEMP/xcodebuild-test.log"
+          # The full log is tens of thousands of lines: show only what matters, as it happens.
+          # A test that hangs fails after two minutes instead of blocking the job.
+          set -o pipefail
           status=0
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" > "$log" 2>&1 || status=$?
-          # The full log is tens of thousands of lines: keep what matters.
-          grep -E "error:|Test Case .* (passed|failed)|Executed [0-9]+ tests|\*\* TEST|nearly matches" "$log" | sort -u | tail -80 || true
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 120 2>&1 \
+            | tee "$log" \
+            | grep --line-buffered -E "error:|Test (Case|Suite) |Executed [0-9]+ tests|\*\* |nearly matches|Testing started|Build Succeeded|BUILD" \
+            || status=$?
           if [ "$status" -ne 0 ]; then
-            tail -40 "$log"
+            tail -60 "$log"
             exit "$status"
           fi
       - name: Platform channels on the simulator
