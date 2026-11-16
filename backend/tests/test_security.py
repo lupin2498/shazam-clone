@@ -125,6 +125,50 @@ async def test_engine_ids_are_not_pasted_into_urls_unchecked(make_client, settin
         assert "evil" not in link["url"] and "onclick" not in link["url"] and "javascript" not in link["url"], link
 
 
+async def test_oversized_upload_is_refused_without_reading_it(client):
+    """Không có giới hạn thân yêu cầu: ai cũng gửi được hàng GB, Starlette ghi hết ra file tạm rồi mới tới handler."""
+    big = b"\xff\xf1" + b"\x00" * 5_000_000
+    resp = await client.post("/v1/recognitions", files={"audio": ("s.aac", big, "audio/aac")})
+    assert resp.status_code == 413 and resp.json()["error"] == "payload_too_large"
+
+    sent = 0
+
+    async def endless_body():
+        nonlocal sent
+        boundary = b"--b\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"s.aac\"\r\n\r\n"
+        yield boundary
+        for _ in range(64):  # 64 MiB, no Content-Length (chunked)
+            sent += 1
+            yield b"\x00" * (1024 * 1024)
+
+    resp = await client.post("/v1/recognitions", content=endless_body(),
+                             headers={"Content-Type": "multipart/form-data; boundary=b"})
+    assert resp.status_code == 413
+    assert sent <= 4, f"the server kept reading: {sent} MiB taken"
+    # Small JSON posts and normal samples are unaffected.
+    assert (await client.post("/v1/recognitions", files={"audio": ("s.aac", adts_stream(12), "audio/aac")})).status_code == 200
+
+
+async def test_a_sample_within_the_limit_is_never_written_to_disk(client, monkeypatch):
+    """README: "Mẫu âm thanh chỉ giữ trong bộ nhớ ... không ghi xuống đĩa". Starlette chuyển phần tải lên
+    lớn hơn 1 MB ra file tạm, mà giới hạn của ta là 2 MB (12 giây WAV 44,1 kHz đã hơn 1 MB)."""
+    import tempfile
+
+    rolled: list[int] = []
+    original = tempfile.SpooledTemporaryFile.rollover
+
+    def spy(self):
+        rolled.append(1)
+        return original(self)
+
+    monkeypatch.setattr(tempfile.SpooledTemporaryFile, "rollover", spy)
+    audio = wav_bytes(12.0, rate=44100)
+    assert 1_000_000 < len(audio) < 2_000_000
+    resp = await client.post("/v1/recognitions", files={"audio": ("s.wav", audio, "audio/wav")})
+    assert resp.status_code == 200, resp.text
+    assert rolled == []
+
+
 def test_redact_masks_only_secret_parameters():
     from app.logsafe import RedactSecretsFilter, redact
 
