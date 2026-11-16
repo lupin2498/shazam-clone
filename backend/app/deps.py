@@ -47,5 +47,5 @@ def check_app_version(
 async def require_integrity(services: Services, token: str | None, expected_hash: str) -> None:
     verdict = await services.integrity.verify(token, expected_hash)
     if not verdict.ok:
-        raise ApiError(403, "integrity_failed", "Không xác minh được ứng dụng. Hãy cài app từ Google Play.",
+        raise ApiError(403, "integrity_failed", "Không xác minh được ứng dụng. Hãy cài Tìm Nhạc từ cửa hàng ứng dụng chính thức.",
                        detail=verdict.reason)
