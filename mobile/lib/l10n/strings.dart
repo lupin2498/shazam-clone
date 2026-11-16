@@ -105,6 +105,7 @@ abstract final class S {
   // History
   static const historyEmpty = 'Chưa có bài nào. Chạm nút nghe để bắt đầu.';
   static const historySearch = 'Tìm trong lịch sử';
+  static const historyNoMatch = 'Không có bài nào khớp với tìm kiếm.';
   static const today = 'Hôm nay';
   static const yesterday = 'Hôm qua';
   static const pendingSection = 'Đang chờ mạng';

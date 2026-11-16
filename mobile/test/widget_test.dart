@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -7,6 +8,7 @@ import 'package:tim_nhac/app.dart';
 import 'package:tim_nhac/models/app_config.dart';
 import 'package:tim_nhac/models/history_entry.dart';
 import 'package:tim_nhac/models/track.dart';
+import 'package:tim_nhac/screens/history_screen.dart';
 import 'package:tim_nhac/screens/result_screen.dart';
 import 'package:tim_nhac/services/app_services.dart';
 
@@ -84,6 +86,27 @@ void main() {
     s.config.value = AppConfig(platforms: AppConfig.defaults.platforms, minAppVersion: '99.0.0');
     await tester.pump();
     expect(find.byType(MaterialBanner), findsNothing);
+  });
+
+  testWidgets('history search with no match says so instead of "no history yet"', (tester) async {
+    final s = await fakeServices(handler: _backend);
+    await s.history.add(HistoryEntry(track: Track.fromJson(trackJson()), source: 'mic', createdAt: DateTime.now()));
+    await tester.pumpWidget(_wrap(s, const HistoryScreen()));
+    await tester.pump();
+    expect(find.text('Nơi Này Có Anh'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'không có bài này');
+    await tester.pump();
+    expect(find.text('Chưa có bài nào. Chạm nút nghe để bắt đầu.'), findsNothing);
+    expect(find.text('Không có bài nào khớp với tìm kiếm.'), findsOneWidget);
+
+    // Same with samples waiting for the network: the card stays, the message is added.
+    await s.history.db.insertPending(PendingSample(
+        audio: Uint8List.fromList([1]), mode: 'auto', source: 'mic', createdAt: DateTime.now()));
+    await s.history.refreshPendingCount();
+    await tester.pump();
+    expect(find.text('Đang chờ mạng (1)'), findsOneWidget);
+    expect(find.text('Không có bài nào khớp với tìm kiếm.'), findsOneWidget);
   });
 
   testWidgets('result screen lists every link in "Nghe" and "Tải/Mua" and saves them', (tester) async {
