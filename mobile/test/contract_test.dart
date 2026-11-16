@@ -1,0 +1,55 @@
+// Values shared with the backend: a change on one side must break a test on that side.
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:tim_nhac/services/api_client.dart';
+import 'package:tim_nhac/services/integrity.dart';
+
+import 'fakes.dart';
+
+/// Computed with backend/app/security/integrity.py:request_hash (same constants in
+/// backend/tests/test_integrity_vectors.py).
+const _audioSha = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+const _fullWithSession = 'e07a9bf6e96698cf41b03031452709106929df467e2b57d4f83645e364736f7a';
+const _earlyNoSession = '4af569da140870f657caa47fdd30ccc8e215d1983d88cd4f02acb1f1798a9445';
+const _searchVietnamese = 'b31fda262bb7fa913b2529db5a202a6b8cbcd9614d1eaf78dcffa99c2a8381ef';
+const _report = '21eabc87dadb5e8a5974d4c2d616cc514d9d4b871d7e29466923a6c41e69e2c1';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('the integrity hash the app sends is the one the backend recomputes', () async {
+    // FakeNative returns "token-for-<requestHash>", so the header shows the hash used.
+    final native = FakeNative()..integrityReadyFromCall = 1;
+    final integrity = IntegrityService(native);
+    await integrity.prepare('123456');
+    final tokens = <String>[];
+    final api = ApiClient(
+      baseUrl: 'http://test',
+      deviceId: () => 'dev-123',
+      integrity: integrity,
+      client: MockClient((http.Request r) async {
+        tokens.add(r.headers['X-Integrity-Token'] ?? 'none');
+        if (r.url.path == '/v1/search') return jsonResponse({'results': []});
+        if (r.url.path.endsWith('/report')) return jsonResponse({'hidden': false}, 202);
+        return jsonResponse(recognitionJson());
+      }),
+    );
+    final audio = Uint8List.fromList([1, 2, 3]);
+    expect(sha256Hex(audio), _audioSha);
+
+    await api.recognize(audio: audio, mode: 'auto', source: 'mic', stage: 'full', sessionId: 'sess-1');
+    await api.recognize(audio: audio, mode: 'auto', source: 'mic', stage: 'early');
+    await api.search('Nơi này có anh', country: 'VN');
+    await api.reportLink('lnk_1', 'violation');
+
+    expect(tokens, [
+      'token-for-$_fullWithSession',
+      'token-for-$_earlyNoSession',
+      'token-for-$_searchVietnamese',
+      'token-for-$_report',
+    ]);
+  });
+}
