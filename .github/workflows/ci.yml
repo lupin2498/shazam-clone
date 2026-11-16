@@ -186,14 +186,16 @@ jobs:
           log="$RUNNER_TEMP/xcodebuild-test.log"
           # The full log is tens of thousands of lines: show only what matters, as it happens.
           # A test that hangs fails after two minutes instead of blocking the job.
+          # No parallel testing: it clones the simulator, which shuts the booted one down
+          # and leaves nothing for the next step to run on.
           set -o pipefail
           status=0
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -parallel-testing-enabled NO \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 120 2>&1 \
             | tee "$log" \
-            | grep --line-buffered -E "error:|Test (Case|Suite) |Executed [0-9]+ tests|\*\* |nearly matches|Testing started|Build Succeeded|BUILD" \
+            | { grep --line-buffered -iE "error:|test (case|suite) |executed [0-9]+ test|\*\* |nearly matches" || true; } \
             || status=$?
           if [ "$status" -ne 0 ]; then
             tail -60 "$log"
@@ -202,6 +204,9 @@ jobs:
       - name: Platform channels on the simulator
         if: ${{ !cancelled() }}
         run: |
+          # xcodebuild may have shut the simulator down; Flutter only sees booted ones.
+          xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b > /dev/null
           # Lets the capture test run instead of only checking the permission error.
           xcrun simctl privacy "$SIMULATOR_UDID" grant microphone vn.timnhac.app || true
           flutter test integration_test/native_bridge_test.dart -d "$SIMULATOR_UDID"
