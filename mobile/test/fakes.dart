@@ -38,7 +38,9 @@ class FakeNative implements NativeBridge {
   int integrityReadyFromCall = 0;
   int integrityPrepareCalls = 0;
   int integrityTokenCalls = 0;
-  bool integrityTokenFails = false;
+
+  /// The next N token requests fail (an expired provider: INTEGRITY_TOKEN_PROVIDER_INVALID).
+  int integrityTokenFailures = 0;
   EncodedSample snapshot = sample(durationMs: 6000);
   EncodedSample full = sample();
   final calls = <String>[];
@@ -149,7 +151,10 @@ class FakeNative implements NativeBridge {
   @override
   Future<String?> integrityToken(String requestHash) async {
     integrityTokenCalls++;
-    if (integrityTokenFails) throw StateError('INTEGRITY_TOKEN_PROVIDER_INVALID');
+    if (integrityTokenFailures > 0) {
+      integrityTokenFailures--;
+      throw StateError('INTEGRITY_TOKEN_PROVIDER_INVALID');
+    }
     return 'token-for-$requestHash';
   }
 }

@@ -52,4 +52,63 @@ void main() {
       'token-for-$_report',
     ]);
   });
+
+  group('Play Integrity recovers without restarting the app', () {
+    late DateTime now;
+    late FakeNative native;
+    late IntegrityService integrity;
+
+    setUp(() {
+      now = DateTime(2026, 11, 16, 9);
+      native = FakeNative();
+      integrity = IntegrityService(native, clock: () => now);
+    });
+
+    test('a prepare that failed at start (offline, Play services busy) is retried later', () async {
+      native.integrityReadyFromCall = 2; // the first attempt fails
+      await integrity.prepare('123456');
+      expect(native.integrityPrepareCalls, 1);
+
+      now = now.add(const Duration(seconds: 10));
+      expect(await integrity.token('dev', ['x']), isNull, reason: 'too soon to try again');
+      expect(native.integrityPrepareCalls, 1, reason: 'no prepare on every request');
+
+      now = now.add(const Duration(minutes: 1));
+      expect(await integrity.token('dev', ['x']), 'token-for-${requestHash('dev', ['x'])}');
+      expect(native.integrityPrepareCalls, 2);
+    });
+
+    test('preparing again for the same project after a failure really retries', () async {
+      // AppServices.reconnect() (server address changed) calls prepare with the same number.
+      native.integrityReadyFromCall = 2;
+      await integrity.prepare('123456');
+      await integrity.prepare('123456');
+      expect(native.integrityPrepareCalls, 2);
+      expect(await integrity.token('dev', ['x']), isNotNull);
+
+      await integrity.prepare('123456'); // ready: nothing to do
+      expect(native.integrityPrepareCalls, 2);
+    });
+
+    test('an expired token provider is prepared again once, then the token is retried', () async {
+      native.integrityReadyFromCall = 1;
+      await integrity.prepare('123456');
+      native.integrityTokenFailures = 1;
+      expect(await integrity.token('dev', ['x']), isNotNull);
+      expect(native.integrityPrepareCalls, 2);
+      expect(native.integrityTokenCalls, 2);
+
+      native.integrityTokenFailures = 5; // still failing: bounded work per request
+      expect(await integrity.token('dev', ['y']), isNull);
+      expect(native.integrityTokenCalls, 4);
+    });
+
+    test('no project number configured: no native call at all', () async {
+      expect(await integrity.token('dev', ['x']), isNull);
+      await integrity.prepare(null);
+      await integrity.prepare('');
+      expect(await integrity.token('dev', ['x']), isNull);
+      expect(native.integrityPrepareCalls + native.integrityTokenCalls, 0);
+    });
+  });
 }
