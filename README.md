@@ -5,6 +5,7 @@ App Android (Flutter) nhận diện bài hát từ micro, từ file ghi âm ho�
 ```
 mobile/    App Flutter (Android trước, iOS sau trên cùng codebase)
 backend/   API FastAPI: nhận diện xếp tầng, truy tìm link, hạn mức, Play Integrity
+docs/      HANDOFF.md: trạng thái, quyết định đã chốt, việc tiếp theo (đọc trước khi làm tiếp)
 ```
 
 ## Kiến trúc
