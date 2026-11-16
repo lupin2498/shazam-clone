@@ -59,7 +59,9 @@ class ACRCloudClient:
             body = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise EngineError(f"acrcloud request failed: {exc}") from exc
-        status = body.get("status") or {}
+        status = body.get("status") if isinstance(body, dict) else None
+        if not isinstance(status, dict):
+            raise EngineError("acrcloud returned an unexpected response")
         code = status.get("code")
         if code == 0:
             return body
@@ -102,10 +104,13 @@ def _artwork(item: dict[str, Any]) -> str | None:
     return album.get("cover") if isinstance(album.get("cover"), str) else None
 
 
-def parse_item(item: dict[str, Any], engine: str, via: str) -> EngineMatch:
+def parse_item(item: dict[str, Any], engine: str, via: str, *, percent: bool | None = None) -> EngineMatch:
+    """``percent``: the score is 0-100 (fingerprints). None → guess (humming scores are 0-1 or 0-100)."""
     external = item.get("external_ids") or {}
     score = float(item.get("score") or 0)
-    confidence = score / 100.0 if score > 1 else score
+    if percent is None:
+        percent = score > 1
+    confidence = score / 100.0 if percent else score
     track = TrackMeta(
         title=item.get("title") or "",
         artists=[a.get("name", "") for a in item.get("artists") or [] if a.get("name")],
@@ -117,7 +122,38 @@ def parse_item(item: dict[str, Any], engine: str, via: str) -> EngineMatch:
         genres=[g.get("name", "") for g in item.get("genres") or [] if g.get("name")],
         external_ids=_ext(item),
     )
-    return EngineMatch(track=track, confidence=round(min(confidence, 1.0), 4), engine=engine, via=via)
+    return EngineMatch(track=track, confidence=round(min(max(confidence, 0.0), 1.0), 4), engine=engine, via=via)
+
+
+def parse_items(body: dict[str, Any], keys: tuple[str, ...], engine: str, via: str,
+                *, percent: bool | None) -> list[EngineMatch]:
+    """Matches under ``metadata[key]`` for each key, best first.
+
+    One item of an unexpected shape is skipped; an answer in which nothing can be read is an
+    EngineError, so the cascade goes on to the next engine instead of the request failing
+    (or, worse, reporting "no match" for an answer we could not parse).
+    """
+    metadata = body.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise EngineError("acrcloud returned unexpected metadata")
+    items: list[Any] = []
+    for key in keys:
+        value = metadata.get(key) or []
+        if not isinstance(value, list):
+            raise EngineError(f"acrcloud returned unexpected metadata.{key}")
+        items.extend(value)
+    matches: list[EngineMatch] = []
+    skipped = 0
+    for item in items:
+        try:
+            if item.get("title"):
+                matches.append(parse_item(item, engine, via, percent=percent))
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError) as exc:
+            skipped += 1
+            log.warning("acrcloud: skipped a result of an unexpected shape: %r", exc)
+    if skipped and not matches:
+        raise EngineError("acrcloud returned results of an unexpected shape")
+    return sorted(matches, key=lambda m: m.confidence, reverse=True)
 
 
 class ACRCloudEngine:
@@ -133,9 +169,8 @@ class ACRCloudEngine:
         body = await self.fingerprint_client.identify(audio, filename)
         if not body:
             return []
-        items = (body.get("metadata") or {}).get("music") or []
-        matches = [parse_item(i, "acrcloud", "fingerprint") for i in items if i.get("title")]
-        return sorted(matches, key=lambda m: m.confidence, reverse=True)
+        # Fingerprint scores are always 0-100: a score of 1 is 1 %, not 100 %.
+        return parse_items(body, ("music",), "acrcloud", "fingerprint", percent=True)
 
     async def cover(self, audio: bytes, filename: str) -> list[EngineMatch]:
         if not self.cover_client:
@@ -143,7 +178,4 @@ class ACRCloudEngine:
         body = await self.cover_client.identify(audio, filename)
         if not body:
             return []
-        metadata = body.get("metadata") or {}
-        items = (metadata.get("humming") or []) + (metadata.get("cover_songs") or [])
-        matches = [parse_item(i, "acrcloud_cover", "cover") for i in items if i.get("title")]
-        return sorted(matches, key=lambda m: m.confidence, reverse=True)
+        return parse_items(body, ("humming", "cover_songs"), "acrcloud_cover", "cover", percent=None)
