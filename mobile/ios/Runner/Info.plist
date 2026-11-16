@@ -71,6 +71,8 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Tìm Nhạc kết nối tới máy chủ trong mạng nội bộ khi bạn nhập địa chỉ như 192.168.1.10 trong Cài đặt → Máy chủ.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Tìm Nhạc chỉ thu âm khi bạn bấm nút Nghe hoặc Ngân nga, để nhận diện bài hát đang phát quanh bạn.</string>
 	<key>UIApplicationSceneManifest</key>

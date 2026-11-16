@@ -5,6 +5,7 @@ import UserNotifications
 /// "Nghe thử" on the trim screen: plays `durationMs` from `startMs`. Main thread only.
 final class PreviewPlayer {
     private var player: AVPlayer?
+    private var statusObservation: NSKeyValueObservation?
     private var stopWork: DispatchWorkItem?
 
     func play(_ url: URL, startMs: Int, durationMs: Int) -> Bool {
@@ -17,22 +18,42 @@ final class PreviewPlayer {
         } catch {
             return false
         }
-        let current = AVPlayer(playerItem: AVPlayerItem(url: url))
+        let item = AVPlayerItem(url: url)
+        let current = AVPlayer(playerItem: item)
         player = current
         let start = CMTime(value: CMTimeValue(max(startMs, 0)), timescale: 1000)
-        current.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+        // An item cannot be sought with a completion handler before it is ready to play
+        // (AVFoundation raises an exception), so wait for that first.
+        statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            let status = item.status
             DispatchQueue.main.async {
-                guard let self = self, finished, self.player === current else { return }
-                current.play()
-                let work = DispatchWorkItem { [weak self] in self?.stop() }
-                self.stopWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(max(durationMs, 0)), execute: work)
+                guard let self = self, self.player === current, self.statusObservation != nil else { return }
+                switch status {
+                case .readyToPlay:
+                    self.statusObservation = nil
+                    current.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                        DispatchQueue.main.async { self?.begin(current, durationMs: durationMs) }
+                    }
+                case .failed:
+                    self.stop()
+                default:
+                    break
+                }
             }
         }
         return true
     }
 
+    private func begin(_ current: AVPlayer, durationMs: Int) {
+        guard player === current else { return }
+        current.play()
+        let work = DispatchWorkItem { [weak self] in self?.stop() }
+        stopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(max(durationMs, 0)), execute: work)
+    }
+
     func stop() {
+        statusObservation = nil
         stopWork?.cancel()
         stopWork = nil
         guard let current = player else { return }
@@ -80,18 +101,23 @@ final class ConnectivityWatcher {
     private let lock = NSLock()
     private var online = true
     private var known = false
+    private var interfaces = ""
 
-    /// Called on the main thread whenever the state changes.
+    /// Called on the main thread when the network goes away, comes back or changes (for
+    /// example Wi-Fi to cellular: Android reports each new default network too, and the
+    /// offline queue retries on every `true`).
     var onChange: ((Bool) -> Void)?
 
     func start() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self else { return }
             let now = path.status == .satisfied
+            let signature = path.availableInterfaces.map { "\($0.type):\($0.name)" }.joined(separator: ",")
             self.lock.lock()
-            let changed = !self.known || self.online != now
+            let changed = !self.known || self.online != now || (now && self.interfaces != signature)
             self.online = now
             self.known = true
+            self.interfaces = signature
             self.lock.unlock()
             if changed {
                 DispatchQueue.main.async { self.onChange?(now) }

@@ -10,7 +10,8 @@ import UniformTypeIdentifiers
 /// It implements the same channels as `MainActivity.kt` on Android (`vn.timnhac/native`,
 /// `levels`, `shared_files`, `connectivity`), so the Dart side is identical on both platforms.
 /// File URIs handed to Dart are `file://` URLs of copies inside the app's temporary directory.
-final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPickerDelegate {
+final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPickerDelegate,
+    UIAdaptivePresentationControllerDelegate {
     private static var shared: NativeBridge?
 
     /// Android package → URL scheme of the same app on iOS, to rank installed apps first.
@@ -64,7 +65,7 @@ final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPic
     private func attach(to registrar: FlutterPluginRegistrar) {
         self.registrar = registrar
         let messenger = registrar.messenger()
-        capture = AudioCapture { [weak self] level in
+        capture = AudioCapture(queue: captureQueue) { [weak self] level in
             DispatchQueue.main.async { self?.levelSink?(level) }
         }
 
@@ -303,6 +304,13 @@ final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPic
         picker.allowsMultipleSelection = false
         pickResult = result
         host.present(picker, animated: true)
+        // A sheet swiped down may skip documentPickerWasCancelled; the Dart call must still end.
+        picker.presentationController?.delegate = self
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        pickResult?(nil)
+        pickResult = nil
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {

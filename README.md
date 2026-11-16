@@ -166,6 +166,7 @@ Khác với Android:
 - Nhận file từ app khác qua "Mở bằng… / Sao chép vào Tìm Nhạc" (kiểu tài liệu audio/video); chưa có Share Extension riêng.
 - iOS không cho app chạy nền để gửi mẫu chờ mạng: hàng chờ được gửi khi mở lại app.
 - File được chọn hay nhận về là bản sao trong thư mục tạm của app, tự xóa ở lần mở app sau.
+- Trình chọn file chỉ mở ứng dụng Tệp: video trong Ảnh (quay màn hình, video đã lưu) phải "Lưu vào Tệp" hoặc "Chia sẻ → Tìm Nhạc" trước.
 
 ## Kiểm thử
 

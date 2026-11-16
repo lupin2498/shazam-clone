@@ -4,19 +4,23 @@ import AVFoundation
 ///
 /// The audio session runs in `.measurement` mode, which switches off the system's gain
 /// control and noise suppression: they distort the audio fingerprint (design doc, section 5).
-/// Counterpart of `AudioCapture.kt` on Android.
+/// It mixes with other apps, so music playing in another app keeps playing through the
+/// speaker and the microphone hears it, as on Android. Counterpart of `AudioCapture.kt`.
 ///
-/// `start`, `snapshot`, `stop` and `cancel` are called from one serial queue; the tap block
-/// runs on an audio thread, so the sample buffer is guarded by a lock.
+/// Every method runs on `queue`, a serial queue owned by the caller; the tap block runs on
+/// an audio thread, so the sample buffer is guarded by a lock.
 final class AudioCapture {
+    private let queue: DispatchQueue
     private let onLevel: (Double) -> Void
     private let lock = NSLock()
     private var engine: AVAudioEngine?
+    private var observers: [NSObjectProtocol] = []
     private var buffer: [Int16] = []
     private var capacity = 0
     private var rate = 44100
 
-    init(onLevel: @escaping (Double) -> Void) {
+    init(queue: DispatchQueue, onLevel: @escaping (Double) -> Void) {
+        self.queue = queue
         self.onLevel = onLevel
     }
 
@@ -32,15 +36,17 @@ final class AudioCapture {
         stop()
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.record, mode: .measurement, options: [])
+            // defaultToSpeaker: the other app's music stays on the speaker (not the earpiece);
+            // A2DP: Bluetooth headphones keep playing while the built-in microphone records.
+            try session.setCategory(
+                .playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try? session.setPreferredSampleRate(44100)
             try session.setActive(true, options: [])
         } catch {
             return false
         }
         let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = engine.inputNode.outputFormat(forBus: 0)
         // No input route (or another app holds the microphone): installing a tap would raise.
         guard format.sampleRate >= 8000, format.channelCount > 0 else {
             deactivateSession()
@@ -54,19 +60,69 @@ final class AudioCapture {
         buffer.reserveCapacity(capacity)
         lock.unlock()
 
-        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(hardwareRate / 20), format: nil) { [weak self] pcm, _ in
-            self?.append(pcm)
+        guard installTap(on: engine) else {
+            deactivateSession()
+            return false
         }
         engine.prepare()
         do {
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
+            engine.inputNode.removeTap(onBus: 0)
             deactivateSession()
             return false
         }
         self.engine = engine
+        observe(engine)
         return true
+    }
+
+    /// Installs the tap for the input's current format. False when there is no usable input.
+    private func installTap(on engine: AVAudioEngine) -> Bool {
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate >= 8000, format.channelCount > 0 else { return false }
+        // 100 ms is the smallest buffer AVAudioNode documents; levels are still sent every 50 ms.
+        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 10), format: nil) { [weak self] pcm, _ in
+            self?.append(pcm)
+        }
+        return true
+    }
+
+    /// The engine stops itself when the input route or its format changes (a headset is
+    /// plugged in) and when the session is interrupted (a call, Siri, an alarm). Recording
+    /// then resumes into the same buffer instead of silently ending early.
+    private func observe(_ engine: AVAudioEngine) {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self, weak engine] _ in
+            guard let self = self, let engine = engine else { return }
+            self.queue.async { self.resume(engine, reinstallTap: true) }
+        })
+        observers.append(center.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(), queue: nil
+        ) { [weak self, weak engine] note in
+            guard let self = self, let engine = engine,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended
+            else { return }
+            self.queue.async { self.resume(engine, reinstallTap: false) }
+        })
+    }
+
+    private func resume(_ engine: AVAudioEngine, reinstallTap: Bool) {
+        // Recording may have been stopped while the notification was on its way.
+        guard self.engine === engine else { return }
+        if reinstallTap {
+            engine.inputNode.removeTap(onBus: 0)
+            // No input any more: keep what was captured, stop() returns it.
+            guard installTap(on: engine) else { return }
+        }
+        if engine.isRunning { return }
+        try? AVAudioSession.sharedInstance().setActive(true, options: [])
+        engine.prepare()
+        try? engine.start()
     }
 
     private func append(_ pcm: AVAudioPCMBuffer) {
@@ -95,12 +151,20 @@ final class AudioCapture {
         } else {
             return
         }
-        onLevel(AudioCapture.level(chunk))
 
         let chunkRate = Int(pcm.format.sampleRate.rounded())
+        // One level per 50 ms, like Android, whatever the size of the tap's buffers.
+        let window = max(chunkRate / 20, 1)
+        var start = 0
+        while start < chunk.count {
+            let end = min(start + window, chunk.count)
+            onLevel(AudioCapture.level(Array(chunk[start..<end])))
+            start = end
+        }
+
         lock.lock()
         defer { lock.unlock() }
-        // The route changed while recording (for example a headset was plugged in).
+        // The input format changed while recording (for example a headset microphone).
         if chunkRate > 0 && chunkRate != rate {
             chunk = Resampler.linear(chunk, from: chunkRate, to: rate)
         }
@@ -121,6 +185,8 @@ final class AudioCapture {
     /// Stops the microphone and returns everything captured.
     @discardableResult
     func stop() -> [Int16] {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
         if let engine = engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -140,7 +206,6 @@ final class AudioCapture {
     }
 
     private func deactivateSession() {
-        // Lets music that was playing in another app resume.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
