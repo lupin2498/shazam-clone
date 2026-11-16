@@ -31,7 +31,9 @@ def device_id(x_device_id: str | None = Header(default=None)) -> str:
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
-    return tuple(int(p) for p in re.findall(r"\d+", v)[:3]) or (0,)
+    """First three numbers, padded with zeros: "1.0" equals "1.0.0" (same rule as the app's isOutdated)."""
+    parts = [int(p) for p in re.findall(r"\d{1,9}", v)[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
 
 
 def check_app_version(

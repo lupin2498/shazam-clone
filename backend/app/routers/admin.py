@@ -21,7 +21,8 @@ router = APIRouter(prefix="/admin", tags=["admin"], include_in_schema=False)
 
 def require_admin(x_admin_token: str | None = Header(default=None), services: Services = Depends(get_services)) -> None:
     expected = services.settings.admin_token
-    if not expected or not x_admin_token or not hmac.compare_digest(expected, x_admin_token):
+    # Compare bytes: compare_digest() raises TypeError on a non-ASCII str (any client can send one).
+    if not expected or not x_admin_token or not hmac.compare_digest(expected.encode(), x_admin_token.encode()):
         raise ApiError(401, "unauthorized", "Unauthorized")
 
 
