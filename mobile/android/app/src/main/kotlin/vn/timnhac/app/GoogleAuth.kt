@@ -8,7 +8,6 @@ import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.ClearTokenRequest
 import com.google.android.gms.auth.api.identity.Identity
-import com.google.android.gms.auth.api.identity.RevokeAccessRequest
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Scope
@@ -78,17 +77,15 @@ class GoogleAuth(private val activity: Activity) {
         return true
     }
 
-    /** Forgets the cached token and revokes the app's access for this account. */
-    fun signOut(email: String?, token: String?, result: MethodChannel.Result) {
-        val tasks = mutableListOf<Task<*>>()
-        if (!token.isNullOrEmpty()) tasks += client.clearToken(ClearTokenRequest.builder().setToken(token).build())
-        if (!email.isNullOrEmpty()) {
-            tasks += client.revokeAccess(
-                RevokeAccessRequest.builder().setAccount(Account(email, ACCOUNT_TYPE)).setScopes(SCOPES).build()
-            )
-        }
+    /**
+     * Forgets the token on this device. The grant at Google is not revoked: it is shared by the
+     * user's other devices, which would all be signed out.
+     */
+    fun signOut(token: String?, result: MethodChannel.Result) {
+        if (token.isNullOrEmpty()) return result.success(null)
         // Signing out locally must work offline too: failures are not reported.
-        Tasks.whenAllComplete(tasks).addOnCompleteListener { result.success(null) }
+        client.clearToken(ClearTokenRequest.builder().setToken(token).build())
+            .addOnCompleteListener { result.success(null) }
     }
 
     private fun payload(auth: AuthorizationResult): Map<String, Any?> = mapOf(

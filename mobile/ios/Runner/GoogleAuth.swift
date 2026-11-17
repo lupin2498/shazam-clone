@@ -18,7 +18,6 @@ final class GoogleAuth: NSObject, ASWebAuthenticationPresentationContextProvidin
     static let scopes = "email https://www.googleapis.com/auth/drive.appdata"
     private static let authEndpoint = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     private static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
-    private static let revokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
 
     private let anchor: () -> ASPresentationAnchor?
     private var session: ASWebAuthenticationSession?
@@ -62,12 +61,11 @@ final class GoogleAuth: NSObject, ASWebAuthenticationPresentationContextProvidin
         }
     }
 
-    /// Revokes the stored grant (best effort) and forgets it.
+    /// Forgets the stored grant on this device. It is not revoked at Google: the user's other
+    /// devices share it and would all be signed out.
     func signOut(completion: @escaping () -> Void) {
-        let token = Keychain.read()
         Keychain.delete()
-        guard let token = token else { return completion() }
-        post(GoogleAuth.revokeEndpoint, form: ["token": token]) { _ in completion() }
+        completion()
     }
 
     private func startBrowser(clientId: String, completion: @escaping (Result<[String: Any]?, AuthError>) -> Void) {

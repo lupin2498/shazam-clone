@@ -119,7 +119,7 @@ class AppServices {
       historyDb = db ?? await SqliteHistoryDb.open();
     } catch (e) {
       debugPrint('SQLite unavailable, history kept in memory: $e');
-      historyDb = MemoryHistoryDb();
+      historyDb = MemoryHistoryDb(isPersistent: false);
     }
     final history = HistoryRepository(historyDb);
     await history.load();

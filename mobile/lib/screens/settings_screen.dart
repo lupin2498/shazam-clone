@@ -259,7 +259,11 @@ class SettingsScreen extends StatelessWidget {
     );
     if (ok != true) return;
     if (signedIn) {
-      if (everywhere) await services.sync.clearEverywhere();
+      if (everywhere && !await services.sync.clearEverywhere()) {
+        // Not on Drive yet: stay signed in so the clearing goes out with the next sync.
+        if (context.mounted) showSnack(context, S.clearEverywherePending);
+        return;
+      }
       await services.sync.signOut();
     }
     await services.history.clearAll();

@@ -255,7 +255,7 @@ class MainActivity : FlutterActivity() {
                 call.argument<String>("invalidToken"),
                 result,
             )
-            "googleSignOut" -> googleAuth.signOut(call.argument<String>("email"), call.argument<String>("accessToken"), result)
+            "googleSignOut" -> googleAuth.signOut(call.argument<String>("accessToken"), result)
             // Only the background capture engine has work to finish.
             "finishBackgroundTask" -> result.success(null)
             "requestNotificationPermission" -> {

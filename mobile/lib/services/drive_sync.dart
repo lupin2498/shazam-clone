@@ -406,20 +406,26 @@ class SyncPlan {
 
 /// Merges this device's state with the sync file ([remote], null when there is none yet).
 /// [knownKeys] are the entries present after the last sync: those missing locally now were
-/// deleted here, and become deletion marks.
+/// deleted here, and become deletion marks. [localDeletions] are the marks kept from earlier
+/// syncs: sent again every time, so a device that overwrote the file with an older copy cannot
+/// bring a deleted entry back.
 SyncPlan planSync({
   required List<HistoryEntry> localHistory,
   required SyncSettings localSettings,
   required int localClearedAt,
   required Set<String> knownKeys,
+  Map<String, int> localDeletions = const {},
   required SyncSnapshot? remote,
   required int now,
 }) {
   final localEntries = localHistory.map(SyncEntry.fromHistory).toList();
   final localKeys = {for (final e in localEntries) e.key};
+  // [knownKeys] live in the same database file as the history, so a lost or reset database
+  // also loses them: a missing entry here really was deleted here.
+  final deletedHere = knownKeys.difference(localKeys);
   final local = SyncSnapshot(
     historyClearedAt: localClearedAt,
-    deleted: {for (final key in knownKeys.difference(localKeys)) key: now},
+    deleted: {...localDeletions, for (final key in deletedHere) key: now},
     entries: localEntries,
     settings: localSettings,
   );
@@ -448,8 +454,13 @@ SyncPlan planSync({
 
 enum SyncState { idle, syncing, ok, offline, needsSignIn, noDriveAccess, driveFull, newerFormat, failed }
 
-/// Runs the sync: after signing in, when the history or a synced setting changes (debounced),
-/// when the app comes back to the foreground after a while, and on request.
+/// The sync was overtaken by a sign-out: it must not touch the local state any more.
+class _Superseded implements Exception {
+  const _Superseded();
+}
+
+/// Runs the sync: after signing in, when the history or a synced setting changes (once changes
+/// have settled), when the app comes back to the foreground after a while, and on request.
 class SyncService extends ChangeNotifier {
   SyncService({
     required this.account,
@@ -471,7 +482,6 @@ class SyncService extends ChangeNotifier {
   /// The backend address came from another device: reload what depends on it.
   final Future<void> Function()? onServerChanged;
 
-  /// Longer than the "Hoàn tác" snack bar, so an undone deletion is never synced.
   final Duration historyDelay;
   final Duration settingsDelay;
   final Duration staleAfter;
@@ -488,10 +498,20 @@ class SyncService extends ChangeNotifier {
   bool _running = false;
   bool _again = false;
   bool _applying = false;
+  Completer<void>? _done;
   Timer? _timer;
+
+  /// Bumped by [signOut]: a sync started before it stops at its next step.
+  int _generation = 0;
+
+  /// [HistoryDb.syncedKeys], cached to tell a real change from a reload.
+  Set<String>? _known;
 
   DateTime? get lastSyncedAt =>
       settings.syncLastAt == 0 ? null : DateTime.fromMillisecondsSinceEpoch(settings.syncLastAt);
+
+  /// Nothing is synced from the in-memory stand-in for a database that failed to open.
+  bool get _usable => account.signedIn && history.db.isPersistent;
 
   void start() {
     if (_started) return;
@@ -499,7 +519,8 @@ class SyncService extends ChangeNotifier {
     history.addListener(_onHistoryChanged);
     settings.addListener(_onSettingsChanged);
     account.addListener(notifyListeners);
-    if (account.signedIn) unawaited(sync());
+    unawaited(history.db.syncedKeys().then((keys) => _known = keys));
+    if (_usable) unawaited(sync());
   }
 
   @override
@@ -519,26 +540,27 @@ class SyncService extends ChangeNotifier {
   }
 
   void _onHistoryChanged() {
-    if (_applying || !account.signedIn) return;
+    if (_applying || !_usable) return;
     final keys = {for (final e in history.entries) historyKey(e)};
-    if (setEquals(keys, settings.syncKnownKeys)) return; // reloaded, nothing new
+    if (_known != null && setEquals(keys, _known)) return; // reloaded, nothing new
     _schedule(historyDelay);
   }
 
   void _onSettingsChanged() {
-    if (_applying || !account.signedIn) return;
+    if (_applying || !_usable) return;
     if (settings.settingsUpdatedAt <= settings.syncSettingsAt) return;
     _schedule(settingsDelay);
   }
 
+  /// Syncs once changes have settled for [delay].
   void _schedule(Duration delay) {
-    if (_timer?.isActive ?? false) return; // the pending sync will include this change too
+    _timer?.cancel();
     _timer = Timer(delay, () => unawaited(sync()));
   }
 
   /// The app came back to the foreground: pick up what other devices changed meanwhile.
   void onResume() {
-    if (!account.signedIn) return;
+    if (!_usable) return;
     final last = settings.syncLastAt;
     if (_clock().millisecondsSinceEpoch - last >= staleAfter.inMilliseconds) unawaited(sync());
   }
@@ -546,15 +568,27 @@ class SyncService extends ChangeNotifier {
   /// Interactive sign-in followed by a first sync. False when the user cancelled.
   /// Throws [GoogleAuthException] when Google refused.
   Future<bool> signIn() async {
+    final before = account.email;
     if (!await account.signIn()) return false;
-    await sync();
+    if (before != null && before != account.email) {
+      // Another account: what was synced with the previous one says nothing about this one.
+      _generation++;
+      await _idle();
+      await settings.clearSyncState(keepAccount: true);
+      await history.db.clearSyncState();
+      _known = {};
+    }
+    await _syncFresh();
     return true;
   }
 
-  /// Signs out on this device. With [deleteRemote], also deletes the sync file; returns false
-  /// when that failed (offline): the device is signed out anyway.
+  /// Signs out on this device: the app forgets its token here, other devices stay signed in.
+  /// With [deleteRemote], also deletes the sync file; returns false when that failed
+  /// (offline): the device is signed out anyway.
   Future<bool> signOut({bool deleteRemote = false}) async {
+    _generation++;
     _timer?.cancel();
+    await _idle(); // a sync in flight stops before touching anything
     var deleted = true;
     if (deleteRemote && account.signedIn) {
       try {
@@ -568,32 +602,70 @@ class SyncService extends ChangeNotifier {
       }
     }
     await account.signOut();
+    await history.db.clearSyncState();
+    _known = {};
     _setState(SyncState.idle);
     return deleted;
   }
 
-  /// "Xóa dữ liệu" on every device: entries recorded until now go away everywhere.
-  Future<void> clearEverywhere() async {
-    await settings.setHistoryClearedAt(_clock().millisecondsSinceEpoch);
+  /// "Xóa dữ liệu" on every device: the entries this device knows go away everywhere. Returns
+  /// whether Drive has it; if not, the clearing stays pending here and goes out with the next
+  /// successful sync.
+  Future<bool> clearEverywhere() async {
+    _timer?.cancel();
+    await _idle();
+    // The newest entry this device has seen, not its clock: a clock running fast must not
+    // clear entries recorded elsewhere in the meantime.
+    var newest = settings.historyClearedAt;
+    for (final e in history.entries) {
+      newest = max(newest, e.createdAt.millisecondsSinceEpoch);
+    }
+    await settings.setHistoryClearedAt(newest);
+    await _whileApplying(() async {
+      for (final e in history.entries) {
+        if (e.id != null && e.createdAt.millisecondsSinceEpoch <= newest) await history.db.delete(e.id!);
+      }
+      await history.load();
+    });
+    return _syncFresh();
+  }
+
+  /// A sync that starts after everything before it finished; true when it succeeded.
+  Future<bool> _syncFresh() async {
+    _timer?.cancel();
+    await _idle();
     await sync();
+    await _idle();
+    return _state == SyncState.ok;
+  }
+
+  Future<void> _idle() async {
+    while (_running) {
+      await _done?.future;
+    }
   }
 
   Future<void> sync() async {
-    if (!account.signedIn) return;
+    if (!_usable) return;
     if (_running) {
       _again = true;
       return;
     }
     _timer?.cancel();
     _running = true;
+    final done = _done = Completer<void>();
+    final generation = _generation;
     _setState(SyncState.syncing);
+    SyncState result;
     try {
-      await _syncOnce();
-      _setState(SyncState.ok);
+      await _syncOnce(generation);
+      result = SyncState.ok;
+    } on _Superseded {
+      result = SyncState.idle;
     } on GoogleAuthException catch (e) {
-      _setState(e.isNetwork ? SyncState.offline : SyncState.needsSignIn);
+      result = e.isNetwork ? SyncState.offline : SyncState.needsSignIn;
     } on DriveException catch (e) {
-      _setState(e.isNetwork
+      result = e.isNetwork
           ? SyncState.offline
           : e.unauthorized
               ? SyncState.needsSignIn
@@ -601,22 +673,26 @@ class SyncService extends ChangeNotifier {
                   ? SyncState.noDriveAccess
                   : e.storageFull
                       ? SyncState.driveFull
-                      : SyncState.failed);
+                      : SyncState.failed;
     } on SyncFormatException {
-      _setState(SyncState.newerFormat);
+      result = SyncState.newerFormat;
     } catch (e) {
       debugPrint('Sync failed: $e');
-      _setState(SyncState.failed);
-    } finally {
-      _running = false;
-      if (_again && account.signedIn) {
-        _again = false;
-        unawaited(sync());
-      }
+      result = SyncState.failed;
     }
+    _running = false;
+    if (generation == _generation) _setState(result);
+    final again = _again && generation == _generation && _usable;
+    _again = false;
+    done.complete();
+    if (again) unawaited(sync());
   }
 
-  Future<void> _syncOnce() async {
+  void _check(int generation) {
+    if (generation != _generation || !account.signedIn) throw const _Superseded();
+  }
+
+  Future<void> _syncOnce(int generation) async {
     _lastRestored = false;
     final files = await _withToken(drive.list);
     SyncSnapshot? remote;
@@ -625,6 +701,7 @@ class SyncService extends ChangeNotifier {
       if (snapshot == null) continue; // unreadable: replaced below
       remote = remote == null ? snapshot : SyncSnapshot.combine(remote, snapshot);
     }
+    _check(generation);
     // The background capture engine may have added entries since the list was loaded.
     await _whileApplying(history.load);
     final now = _clock().millisecondsSinceEpoch;
@@ -637,12 +714,15 @@ class SyncService extends ChangeNotifier {
         serverUrl: settings.serverOverride,
       ),
       localClearedAt: settings.historyClearedAt,
-      knownKeys: settings.syncKnownKeys,
+      knownKeys: await history.db.syncedKeys(),
+      localDeletions: await history.db.syncDeletions(),
       remote: remote,
       now: now,
     );
+    _check(generation);
     _lastRestored = await _apply(plan);
     if (plan.uploadNeeded || files.length > 1 || (remote == null && files.isNotEmpty)) {
+      _check(generation);
       final body = plan.merged.encode();
       if (files.isEmpty) {
         await _withToken((t) => drive.create(t, body));
@@ -653,8 +733,11 @@ class SyncService extends ChangeNotifier {
         }
       }
     }
+    _check(generation);
+    final keys = {for (final e in plan.merged.entries) e.key};
+    await history.db.saveSyncState(keys, plan.merged.deleted);
+    _known = keys;
     await settings.saveSyncState(
-      knownKeys: {for (final e in plan.merged.entries) e.key},
       lastAt: now,
       settingsAt: max(settings.settingsUpdatedAt, plan.merged.settings?.updatedAt ?? 0),
       historyClearedAt: plan.merged.historyClearedAt,
@@ -671,7 +754,6 @@ class SyncService extends ChangeNotifier {
   }
 
   Future<bool> _apply(SyncPlan plan) async {
-    if (plan.deleteLocalIds.isEmpty && plan.insertLocally.isEmpty && plan.applySettings == null) return false;
     var serverChanged = false;
     await _whileApplying(() async {
       for (final id in plan.deleteLocalIds) {
@@ -680,6 +762,8 @@ class SyncService extends ChangeNotifier {
       for (final e in plan.insertLocally) {
         await history.db.insert(e.toHistoryEntry());
       }
+      // Rows past the newest 1000 are not in the sync file and would come back into view.
+      await history.db.keepNewest(SyncSnapshot.maxEntries);
       await history.load();
       final s = plan.applySettings;
       if (s != null) {

@@ -31,11 +31,11 @@ class HistoryEntry {
 
   Candidate get candidate => Candidate(track: track, confidence: confidence ?? 1, flags: flags);
 
-  HistoryEntry copyWith({int? id, List<TrackLink>? links}) => HistoryEntry(
+  HistoryEntry copyWith({int? id, List<TrackLink>? links, DateTime? createdAt}) => HistoryEntry(
         id: id ?? this.id,
         track: track,
         source: source,
-        createdAt: createdAt,
+        createdAt: createdAt ?? this.createdAt,
         recognitionId: recognitionId,
         flags: flags,
         confidence: confidence,

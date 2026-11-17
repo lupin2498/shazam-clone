@@ -122,8 +122,8 @@ Khi đã đăng nhập Google, địa chỉ máy chủ được đồng bộ cù
 
 - Quyền xin Google: chỉ địa chỉ email và thư mục ẩn của app (`drive.appdata`); app không thấy file nào khác.
 - Không đồng bộ: mẫu âm thanh, hàng chờ offline, mã thiết bị ẩn danh (hạn mức vẫn tính theo từng máy), link của từng bài (tải lại từ backend khi mở).
-- Gộp giữa các máy: mỗi bài một khóa (`id bài@thời điểm`), bài xóa ở một máy để lại dấu xóa (giữ 180 ngày) nên không quay lại; "Xóa dữ liệu" có tùy chọn xóa lịch sử trên mọi máy; cài đặt thì bản sửa sau cùng thắng. Đồng bộ khi đăng nhập, sau mỗi thay đổi (chờ vài giây), khi mở lại app sau 10 phút và khi bấm "Đồng bộ ngay".
-- Đăng xuất có thể xóa luôn bản sao trên Drive. "Xóa dữ liệu" đăng xuất máy này để lịch sử không tải về lại.
+- Gộp giữa các máy: mỗi bài một khóa (`id bài@thời điểm`), bài xóa ở một máy để lại dấu xóa (giữ 180 ngày, gửi lại ở mỗi lần đồng bộ) nên không quay lại; "Hoàn tác" khôi phục bài thành một mục mới. Sổ đồng bộ (khóa đã có, dấu xóa) nằm chung file SQLite với lịch sử: mất file lịch sử thì app tải lại từ Drive chứ không coi là đã xóa. "Xóa dữ liệu" có tùy chọn xóa lịch sử trên mọi máy (tới bài mới nhất máy đó thấy; khi mất mạng thì việc xóa chờ lần đồng bộ sau và máy vẫn đăng nhập). Cài đặt thì bản sửa sau cùng thắng. Giữ tối đa 1000 bài. Đồng bộ khi đăng nhập, sau khi thay đổi lắng xuống (8 giây với lịch sử, 3 giây với cài đặt), khi mở lại app sau 10 phút và khi bấm "Đồng bộ ngay".
+- Đăng xuất chỉ quên token trên máy đó (các máy khác dùng cùng tài khoản vẫn đồng bộ) và có thể xóa luôn bản sao trên Drive; muốn thu hồi hẳn quyền của app thì vào Tài khoản Google → Bảo mật → Ứng dụng bên thứ ba. "Xóa dữ liệu" đăng xuất máy này để lịch sử không tải về lại.
 
 Cấu hình một lần trên [Google Cloud Console](https://console.cloud.google.com/) (một dự án cho cả Android và iOS):
 

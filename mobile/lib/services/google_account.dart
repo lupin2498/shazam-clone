@@ -79,7 +79,9 @@ class GoogleAccount extends ChangeNotifier {
     return true;
   }
 
-  /// Forgets the account on this device and revokes the app's access (best effort offline).
+  /// Forgets the account and its token on this device. The app's access is not revoked at
+  /// Google: other devices on the same account stay signed in (the user can remove the access
+  /// in their Google Account, "Bảo mật → Ứng dụng bên thứ ba").
   Future<void> signOut() async {
     try {
       await native.googleSignOut(email: email, accessToken: _token, iosClientId: _isIOS ? iosClientId : null);

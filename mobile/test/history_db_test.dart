@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -57,5 +58,62 @@ void main() {
     await fresh.clearAll();
     expect(fresh.entries, isEmpty);
     expect(fresh.pendingCount, 0);
+  });
+  test('a version 1 database gets the sync tables; sync bookkeeping and pruning', () async {
+    final dir = await Directory.systemTemp.createTemp('timnhac_db');
+    addTearDown(() => dir.delete(recursive: true));
+    final path = '${dir.path}/timnhac.db';
+    // The schema shipped before Drive sync.
+    final v1 = await databaseFactoryFfi.openDatabase(path,
+        options: OpenDatabaseOptions(
+          version: 1,
+          onCreate: (db, _) async {
+            await db.execute('CREATE TABLE history(id INTEGER PRIMARY KEY AUTOINCREMENT, recognition_id TEXT, '
+                'track_id TEXT NOT NULL, track_json TEXT NOT NULL, flags TEXT NOT NULL DEFAULT \'[]\', '
+                'confidence REAL, source TEXT NOT NULL, links_json TEXT, created_at INTEGER NOT NULL)');
+            await db.execute('CREATE TABLE pending_sample(id INTEGER PRIMARY KEY AUTOINCREMENT, audio BLOB NOT NULL, '
+                'mode TEXT NOT NULL, source TEXT NOT NULL, filename_hint TEXT, attempts INTEGER NOT NULL DEFAULT 0, '
+                'created_at INTEGER NOT NULL)');
+          },
+        ));
+    await v1.close();
+
+    final db = await SqliteHistoryDb.open(path: path, factory: databaseFactoryFfi);
+    expect(db.isPersistent, isTrue);
+    expect(await db.syncedKeys(), isEmpty);
+    await db.saveSyncState({'a@1', 'b@2'}, {'c@3': 300});
+    expect(await db.syncedKeys(), {'a@1', 'b@2'});
+    expect(await db.syncDeletions(), {'c@3': 300});
+    await db.saveSyncState({'b@2'}, const {});
+    expect(await db.syncedKeys(), {'b@2'});
+    expect(await db.syncDeletions(), isEmpty);
+
+    for (var i = 0; i < 5; i++) {
+      await db.insert(HistoryEntry(
+        track: Track.fromJson(trackJson(id: 'k$i')),
+        source: 'mic',
+        createdAt: DateTime(2026, 11, 17, 9, i),
+      ));
+    }
+    await db.keepNewest(3);
+    expect((await db.list()).map((e) => e.track.id), ['k4', 'k3', 'k2']);
+
+    // "Xóa dữ liệu" forgets the sync bookkeeping with the history.
+    final repo = HistoryRepository(db);
+    await repo.clearAll();
+    expect(await db.syncedKeys(), isEmpty);
+    expect(repo.entries, isEmpty);
+  });
+
+  test('"Hoàn tác" brings a deleted entry back as a new one', () async {
+    final repo = HistoryRepository(MemoryHistoryDb());
+    final saved = await repo.add(HistoryEntry(
+      track: Track.fromJson(trackJson()),
+      source: 'mic',
+      createdAt: DateTime(2026, 11, 17, 9),
+    ));
+    await repo.remove(saved.id!);
+    await repo.restore(saved);
+    expect(repo.entries.single.createdAt, DateTime(2026, 11, 17, 9).add(const Duration(milliseconds: 1)));
   });
 }

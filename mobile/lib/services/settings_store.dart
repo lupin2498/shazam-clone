@@ -22,10 +22,10 @@ class SettingsStore extends ChangeNotifier {
   static const _kSettingsUpdatedAt = 'settings_updated_at';
   static const _kSyncEmail = 'sync_email';
   static const _kSyncLastAt = 'sync_last_at';
-  static const _kSyncKnownKeys = 'sync_known_keys';
   static const _kSyncSettingsAt = 'sync_settings_at';
   static const _kHistoryClearedAt = 'history_cleared_at';
-  static const _syncKeys = [_kSyncEmail, _kSyncLastAt, _kSyncKnownKeys, _kSyncSettingsAt, _kHistoryClearedAt];
+  static const _syncProgressKeys = [_kSyncLastAt, _kSyncSettingsAt, _kHistoryClearedAt];
+  static const _syncKeys = [_kSyncEmail, ..._syncProgressKeys];
 
   static Future<SettingsStore> load() async => SettingsStore(await SharedPreferences.getInstance());
 
@@ -98,7 +98,11 @@ class SettingsStore extends ChangeNotifier {
   /// epoch; 0 = never. The newer side wins when two devices disagree.
   int get settingsUpdatedAt => _prefs.getInt(_kSettingsUpdatedAt) ?? 0;
 
-  Future<void> _touch() => _prefs.setInt(_kSettingsUpdatedAt, DateTime.now().millisecondsSinceEpoch);
+  /// Always later than what this device already has or last synced, even if its clock went
+  /// back: a change made here must win over the values it replaces.
+  Future<void> _touch() => _prefs.setInt(
+      _kSettingsUpdatedAt,
+      max(DateTime.now().millisecondsSinceEpoch, max(settingsUpdatedAt, syncSettingsAt) + 1));
 
   /// Settings that came from another device: stored as they are, with their own date.
   /// Returns whether the backend address changed.
@@ -132,9 +136,6 @@ class SettingsStore extends ChangeNotifier {
   /// Last successful sync, ms since epoch (0 = never).
   int get syncLastAt => _prefs.getInt(_kSyncLastAt) ?? 0;
 
-  /// History keys present after the last sync: a key missing locally since then was deleted here.
-  Set<String> get syncKnownKeys => (_prefs.getStringList(_kSyncKnownKeys) ?? const []).toSet();
-
   /// [settingsUpdatedAt] as of the last sync: a newer value means a local change to upload.
   int get syncSettingsAt => _prefs.getInt(_kSyncSettingsAt) ?? 0;
 
@@ -144,20 +145,19 @@ class SettingsStore extends ChangeNotifier {
   Future<void> setHistoryClearedAt(int ms) => _prefs.setInt(_kHistoryClearedAt, ms);
 
   Future<void> saveSyncState({
-    required Set<String> knownKeys,
     required int lastAt,
     required int settingsAt,
     required int historyClearedAt,
   }) async {
-    await _prefs.setStringList(_kSyncKnownKeys, knownKeys.toList());
     await _prefs.setInt(_kSyncLastAt, lastAt);
     await _prefs.setInt(_kSyncSettingsAt, settingsAt);
     await _prefs.setInt(_kHistoryClearedAt, historyClearedAt);
   }
 
-  /// Signed out: forget the account and what was synced (local data stays).
-  Future<void> clearSyncState() async {
-    for (final key in _syncKeys) {
+  /// Signed out: forget the account and what was synced (local data stays). With
+  /// [keepAccount], only the progress (another account was chosen: start over with it).
+  Future<void> clearSyncState({bool keepAccount = false}) async {
+    for (final key in keepAccount ? _syncProgressKeys : _syncKeys) {
       await _prefs.remove(key);
     }
   }

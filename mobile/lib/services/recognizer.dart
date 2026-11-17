@@ -151,7 +151,7 @@ class ListenSession extends ChangeNotifier {
     }
     if (isClosed) return done; // cancelled while the microphone was opening
     if (!started) {
-      _finish(const Failed(S.micBusy));
+      _finish(Failed(_sourceOverride == 'playback' ? S.playbackStartFailed : S.micBusy));
       return done;
     }
     phase = ListenPhase.listening;

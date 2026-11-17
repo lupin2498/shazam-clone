@@ -9,6 +9,7 @@ import 'package:tim_nhac/models/track.dart';
 import 'package:tim_nhac/screens/result_screen.dart';
 import 'package:tim_nhac/screens/settings_screen.dart';
 import 'package:tim_nhac/services/app_services.dart';
+import 'package:tim_nhac/services/history.dart';
 import 'package:tim_nhac/services/native_bridge.dart';
 import 'package:tim_nhac/services/playback_recognition.dart';
 import 'package:tim_nhac/services/recognizer.dart';
@@ -87,7 +88,23 @@ void main() {
           .then((s) => run(s, native).then((o) => outcome = o));
       async.elapse(const Duration(seconds: 1));
       expect(outcome, isA<Failed>());
-      expect(native.notifications.single.$1, 'Chưa nhận diện được');
+      expect(native.notifications.single, ('Chưa nhận diện được', 'Không bắt đầu thu được âm thanh đang phát trên máy.'));
+    });
+  });
+
+  test('a result in the stand-in for a broken database is notified without an entry to open', () {
+    fakeAsync((async) {
+      final native = FakeNative();
+      ListenOutcome? outcome;
+      fakeServices(
+        native: native,
+        db: MemoryHistoryDb(isPersistent: false),
+        handler: (r) async => jsonResponse(recognitionJson()),
+      ).then((s) => run(s, native).then((o) => outcome = o));
+      async.elapse(const Duration(seconds: 14));
+      expect(outcome, isA<Matched>());
+      expect(native.notifications.single.$1, 'Đã nhận diện bài hát');
+      expect(native.notificationIds.single, isNull);
     });
   });
 

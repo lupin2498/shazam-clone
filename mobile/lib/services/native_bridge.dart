@@ -131,7 +131,8 @@ abstract class NativeBridge {
     String? iosClientId,
   });
 
-  /// Forgets the account on this device and revokes the app's access.
+  /// Forgets the account's token on this device (the grant at Google stays, so the user's
+  /// other devices keep working).
   Future<void> googleSignOut({String? email, String? accessToken, String? iosClientId});
 }
 

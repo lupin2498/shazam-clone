@@ -33,7 +33,7 @@ Future<void> playbackCaptureEntry(NativeBridge native) async {
       db = await SqliteHistoryDb.open();
     } catch (e) {
       debugPrint('SQLite unavailable, background result kept in memory: $e');
-      db = MemoryHistoryDb();
+      db = MemoryHistoryDb(isPersistent: false);
     }
     // The last /v1/config the app received: no extra request before listening.
     final config = ConfigRepository(api, settings).value;
@@ -80,7 +80,10 @@ Future<ListenOutcome> runPlaybackRecognition({
     session.dispose();
   }
   final (title, body, historyId) = describeBackgroundOutcome(outcome);
-  if (title != null) await _safeNotify(native, title, body, historyId: historyId);
+  // An entry of the in-memory stand-in for a database that failed to open is not in the app's
+  // history: tapping would open another one.
+  final openable = history.db.isPersistent ? historyId : null;
+  if (title != null) await _safeNotify(native, title, body, historyId: openable);
   return outcome;
 }
 

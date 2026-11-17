@@ -20,6 +20,22 @@ abstract class HistoryDb {
   Future<void> deletePending(int id);
   Future<void> bumpAttempts(int id);
   Future<void> clearPending();
+
+  /// False for the in-memory stand-in used when the database cannot be opened: nothing is
+  /// synced from it, its ids are not shown outside the app.
+  bool get isPersistent;
+
+  /// Google Drive sync bookkeeping (lib/services/drive_sync.dart), kept in the same file as the
+  /// history: losing the history then loses it too, and a lost history can never look like
+  /// entries the user deleted. [syncedKeys]: the entries present after the last sync;
+  /// [syncDeletions]: deletion marks (key → ms) still worth sending.
+  Future<Set<String>> syncedKeys();
+  Future<Map<String, int>> syncDeletions();
+  Future<void> saveSyncState(Set<String> keys, Map<String, int> deletions);
+  Future<void> clearSyncState();
+
+  /// Keeps only the [count] newest entries.
+  Future<void> keepNewest(int count);
 }
 
 /// Two tables, as in section 8: `history` and `pending_sample`.
@@ -34,8 +50,12 @@ class SqliteHistoryDb implements HistoryDb {
     final db = await f.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
+        onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 2) await _createSyncTables(db);
+        },
         onCreate: (db, _) async {
+          await _createSyncTables(db);
           await db.execute('''
             CREATE TABLE history(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +84,43 @@ class SqliteHistoryDb implements HistoryDb {
     );
     return SqliteHistoryDb(db);
   }
+
+  static Future<void> _createSyncTables(Database db) async {
+    await db.execute('CREATE TABLE sync_key(key TEXT PRIMARY KEY)');
+    await db.execute('CREATE TABLE sync_deleted(key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+  }
+
+  @override
+  bool get isPersistent => true;
+
+  @override
+  Future<Set<String>> syncedKeys() async => {for (final r in await _db.query('sync_key')) r['key'] as String};
+
+  @override
+  Future<Map<String, int>> syncDeletions() async =>
+      {for (final r in await _db.query('sync_deleted')) r['key'] as String: r['at'] as int};
+
+  @override
+  Future<void> saveSyncState(Set<String> keys, Map<String, int> deletions) => _db.transaction((txn) async {
+        await txn.delete('sync_key');
+        await txn.delete('sync_deleted');
+        final batch = txn.batch();
+        for (final key in keys) {
+          batch.insert('sync_key', {'key': key});
+        }
+        deletions.forEach((key, at) => batch.insert('sync_deleted', {'key': key, 'at': at}));
+        await batch.commit(noResult: true);
+      });
+
+  @override
+  Future<void> clearSyncState() => _db.transaction((txn) async {
+        await txn.delete('sync_key');
+        await txn.delete('sync_deleted');
+      });
+
+  @override
+  Future<void> keepNewest(int count) => _db.rawDelete(
+      'DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY created_at DESC LIMIT ?)', [count]);
 
   static HistoryEntry _entry(Map<String, Object?> row) => HistoryEntry(
         id: row['id'] as int,
@@ -146,9 +203,42 @@ class SqliteHistoryDb implements HistoryDb {
 
 /// In-memory implementation for tests and as a fallback if SQLite cannot open.
 class MemoryHistoryDb implements HistoryDb {
+  /// [isPersistent] is false when this replaces a database that failed to open; tests use it
+  /// in place of the real database.
+  MemoryHistoryDb({this.isPersistent = true});
+
+  @override
+  final bool isPersistent;
+
   final _entries = <HistoryEntry>[];
   final _pending = <PendingSample>[];
   var _nextId = 1;
+  Set<String> _syncedKeys = {};
+  Map<String, int> _syncDeletions = {};
+
+  @override
+  Future<Set<String>> syncedKeys() async => {..._syncedKeys};
+
+  @override
+  Future<Map<String, int>> syncDeletions() async => {..._syncDeletions};
+
+  @override
+  Future<void> saveSyncState(Set<String> keys, Map<String, int> deletions) async {
+    _syncedKeys = {...keys};
+    _syncDeletions = {...deletions};
+  }
+
+  @override
+  Future<void> clearSyncState() async {
+    _syncedKeys = {};
+    _syncDeletions = {};
+  }
+
+  @override
+  Future<void> keepNewest(int count) async {
+    _entries.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    if (_entries.length > count) _entries.removeRange(count, _entries.length);
+  }
 
   @override
   Future<int> insert(HistoryEntry e) async {
@@ -238,14 +328,17 @@ class HistoryRepository extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// "Hoàn tác" after a deletion. The entry comes back as a new one (1 ms later): if the deletion
+  /// was already synced, its deletion mark must not remove the restored entry on every device.
   Future<void> restore(HistoryEntry entry) async {
-    await db.insert(entry);
+    await db.insert(entry.copyWith(createdAt: entry.createdAt.add(const Duration(milliseconds: 1))));
     await load();
   }
 
   Future<void> clearAll() async {
     await db.clear();
     await db.clearPending();
+    await db.clearSyncState();
     await load();
   }
 

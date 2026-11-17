@@ -194,4 +194,8 @@ abstract final class S {
   static const syncRestored = 'Đã khôi phục lịch sử và cài đặt từ Google Drive';
   static const clearDataSyncedHint = 'Máy này cũng đăng xuất Google để dữ liệu không tải về lại.';
   static const clearDataEverywhere = 'Xóa cả lịch sử đã đồng bộ trên mọi máy';
+  static const clearEverywherePending =
+      'Đã xóa lịch sử trên máy này, nhưng chưa kết nối được Google Drive. Các máy khác sẽ xóa ở lần '
+      'đồng bộ tới; máy này vẫn đăng nhập để gửi việc xóa đó.';
+  static const playbackStartFailed = 'Không bắt đầu thu được âm thanh đang phát trên máy.';
 }

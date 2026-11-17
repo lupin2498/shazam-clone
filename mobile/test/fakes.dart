@@ -277,10 +277,12 @@ Future<AppServices> fakeServices({
   http.Client? client,
   HistoryDb? db,
   Duration streamStallTimeout = const Duration(seconds: 20),
+  SettingsStore? keepSettings,
 }) async {
-  SharedPreferences.setMockInitialValues({});
   final bridge = native ?? FakeNative();
-  final settings = await SettingsStore.load();
+  // keepSettings: the same device starting again (its preferences survived).
+  if (keepSettings == null) SharedPreferences.setMockInitialValues({});
+  final settings = keepSettings ?? await SettingsStore.load();
   final integrity = IntegrityService(bridge);
   final api = ApiClient(
     baseUrl: 'http://test',

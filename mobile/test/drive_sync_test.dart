@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:fake_async/fake_async.dart';
@@ -14,6 +15,7 @@ import 'package:tim_nhac/screens/settings_screen.dart';
 import 'package:tim_nhac/services/app_services.dart';
 import 'package:tim_nhac/services/drive_sync.dart';
 import 'package:tim_nhac/services/google_account.dart';
+import 'package:tim_nhac/services/history.dart';
 import 'package:tim_nhac/services/native_bridge.dart';
 import 'package:tim_nhac/services/settings_store.dart';
 
@@ -25,6 +27,9 @@ class FakeDrive {
   final requests = <http.Request>[];
   Set<String> validTokens = {'token-1'};
   bool offline = false;
+
+  /// While set, listing the files waits for it: a sync is then "in flight".
+  Completer<void>? gate;
   int? failStatus;
   String? failReason;
   var _nextId = 1;
@@ -37,6 +42,7 @@ class FakeDrive {
     requests.add(r);
     if (offline) throw http.ClientException('offline');
     if (r.url.host == 'openidconnect.googleapis.com') return jsonResponse({'email': 'an@example.com'});
+    if (gate != null && r.method == 'GET' && r.url.path == '/drive/v3/files') await gate!.future;
     if (r.url.host != 'www.googleapis.com') return jsonResponse({'error': 'not_found', 'message': 'x'}, 404);
     final token = (r.headers['Authorization'] ?? '').replaceFirst('Bearer ', '');
     if (!validTokens.contains(token)) return _error(401, 'authError');
@@ -319,9 +325,183 @@ void main() {
       expect(await a.sync.signOut(deleteRemote: true), isTrue);
       expect(drive.files, isEmpty);
       expect(a.account.signedIn, isFalse);
-      expect(a.settings.syncKnownKeys, isEmpty);
+      expect(await a.history.db.syncedKeys(), isEmpty);
       expect(native.googleSignOuts, 1);
       expect(titles(a), {'Bài t1'});
+    });
+  });
+
+  group('review regressions', () {
+    test('a lost database never deletes anything on Drive', () async {
+      final drive = FakeDrive();
+      final (a, native) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.history.add(entry('t2', 2));
+      await a.sync.signIn();
+      // Same device, same preferences, but the history file is gone (corrupted and recreated).
+      final again = await fakeServices(native: native, handler: drive.handle, keepSettings: a.settings);
+      expect(again.account.signedIn, isTrue);
+      await again.sync.sync();
+      expect(again.sync.state, SyncState.ok);
+      expect(drive.snapshot.entries.length, 2);
+      expect(drive.snapshot.deleted, isEmpty);
+      expect(titles(again), {'Bài t1', 'Bài t2'}); // restored from Drive instead
+    });
+
+    test('deleting the last entry still reaches the other devices', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      final (b, _) = await device(drive);
+      await b.sync.signIn();
+      await a.history.remove(a.history.entries.single.id!);
+      await a.sync.sync();
+      await b.sync.sync();
+      expect(b.history.entries, isEmpty);
+    });
+
+    test('the in-memory stand-in for a broken database is never synced', () async {
+      final drive = FakeDrive();
+      final native = FakeNative();
+      final s = await fakeServices(native: native, handler: drive.handle, db: MemoryHistoryDb(isPersistent: false));
+      await s.history.add(entry('t1', 1));
+      expect(await s.sync.signIn(), isTrue);
+      expect(drive.files, isEmpty);
+      expect(await s.sync.clearEverywhere(), isFalse);
+    });
+
+    test('undoing a deletion after it was synced keeps the entry on every device', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      final removed = a.history.entries.single;
+      await a.history.remove(removed.id!);
+      await a.sync.sync(); // the deletion is on Drive
+      await a.history.restore(removed); // "Hoàn tác", tapped late
+      await a.sync.sync();
+      expect(titles(a), {'Bài t1'});
+      expect(drive.snapshot.entries.single.track['id'], 't1');
+      final (b, _) = await device(drive);
+      await b.sync.signIn();
+      expect(titles(b), {'Bài t1'});
+    });
+
+    test('a deletion survives another device overwriting the file with an older copy', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.history.add(entry('t2', 2));
+      await a.sync.signIn();
+      final (b, _) = await device(drive);
+      await b.sync.signIn();
+      final stale = drive.files.values.single.content; // what B read
+
+      await a.history.remove(a.history.entries.firstWhere((x) => x.track.id == 't1').id!);
+      await a.sync.sync();
+      final id = drive.files.keys.single;
+      drive.files[id] = (content: stale, modified: 50); // B writes its older copy back
+
+      await a.sync.sync();
+      expect(titles(a), {'Bài t2'});
+      expect(drive.snapshot.entries.map((x) => x.track['id']), ['t2']);
+      await b.sync.sync();
+      expect(titles(b), {'Bài t2'});
+    });
+
+    test('signing out while a sync is running leaves nothing behind', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      drive.gate = Completer<void>();
+      final running = a.sync.sync();
+      await Future<void>.delayed(Duration.zero);
+      final signingOut = a.sync.signOut();
+      drive.gate!.complete();
+      drive.gate = null;
+      await running;
+      await signingOut;
+      expect(a.account.signedIn, isFalse);
+      expect(await a.history.db.syncedKeys(), isEmpty);
+      expect(a.settings.syncLastAt, 0);
+      expect(a.sync.state, SyncState.idle);
+    });
+
+    test('choosing another Google account starts over instead of merging old bookkeeping', () async {
+      final drive = FakeDrive();
+      final (a, native) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      await a.history.remove(a.history.entries.single.id!); // not synced yet
+      native.googleAuth = const GoogleAuthorization(accessToken: 'token-1', email: 'binh@example.com');
+      await a.sync.signIn();
+      expect(a.account.email, 'binh@example.com');
+      expect(drive.snapshot.deleted, isEmpty, reason: "the first account's deletion is not this account's");
+    });
+
+    test('clearing everywhere while offline stays pending and goes out with the next sync', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      final (b, _) = await device(drive);
+      await b.history.add(entry('t5', 5));
+      await b.sync.signIn();
+      await a.sync.sync();
+      expect(titles(a), {'Bài t1', 'Bài t5'});
+
+      drive.offline = true;
+      expect(await a.sync.clearEverywhere(), isFalse);
+      expect(a.history.entries, isEmpty);
+      expect(a.account.signedIn, isTrue);
+      expect(drive.snapshot.entries.length, 2);
+
+      drive.offline = false;
+      await a.sync.sync();
+      expect(drive.snapshot.entries, isEmpty);
+      await b.sync.sync();
+      expect(b.history.entries, isEmpty);
+    });
+
+    test('clearing everywhere stops at the newest entry this device has seen', () async {
+      final drive = FakeDrive();
+      final (a, _) = await device(drive);
+      await a.history.add(entry('t1', 1));
+      await a.sync.signIn();
+      final (b, _) = await device(drive);
+      await b.sync.signIn();
+      await b.history.add(entry('t9', 9)); // recorded on B, not yet seen by A
+      expect(await a.sync.clearEverywhere(), isTrue);
+      await b.sync.sync();
+      expect(titles(b), {'Bài t9'});
+    });
+
+    test('rows past the newest 1000 are pruned instead of coming back', () async {
+      final drive = FakeDrive();
+      final db = MemoryHistoryDb();
+      for (var i = 0; i < 1003; i++) {
+        await db.insert(HistoryEntry(
+          track: Track.fromJson(trackJson(id: 'k$i')),
+          source: 'mic',
+          createdAt: DateTime(2026, 1, 1).add(Duration(minutes: i)),
+        ));
+      }
+      final s = await fakeServices(native: FakeNative(), handler: drive.handle, db: db);
+      await s.history.load();
+      await s.sync.signIn();
+      expect((await db.list()).length, 1000);
+      expect(drive.snapshot.entries.length, 1000);
+      expect(drive.snapshot.deleted, isEmpty);
+    });
+
+    test('a setting changed here wins even if this clock is behind the last sync', () async {
+      final (a, _) = await device(FakeDrive());
+      final future = DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch;
+      await a.settings.saveSyncState(lastAt: future, settingsAt: future, historyClearedAt: 0);
+      await a.settings.setCountry('KR');
+      expect(a.settings.settingsUpdatedAt, greaterThan(future));
     });
   });
 
