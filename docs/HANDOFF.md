@@ -24,8 +24,8 @@ Làm app theo tài liệu thiết kế "App nhận diện nhạc & truy tìm đa
   - **CI build bộ cài**: mỗi lần push có artifact `tim-nhac-android` (APK release 3 ABI) và `tim-nhac-ios` (IPA chưa ký).
   - **Nhạc đang phát trên máy** (Android 10+, ngày 17/11): ô Cài đặt nhanh "Tìm Nhạc" → `CaptureConsentActivity` → `PlaybackCaptureService` (foreground `mediaProjection`, `AudioPlaybackCapture`) chạy engine Flutter không giao diện trên `playbackCaptureMain`; kết quả lưu lịch sử (nguồn `playback`) và hiện bằng thông báo, chạm mở bài. Backend nhận `source=playback`.
   - **Đồng bộ Google Drive** (17/11, theo yêu cầu "đổi tính năng máy chủ sang đồng bộ Google Drive"; người dùng chọn: giữ backend để nhận diện, đồng bộ dữ liệu): đăng nhập Google (Android: Google Identity Services `AuthorizationClient`; iOS: trình duyệt hệ thống + PKCE + Keychain), một file JSON trong `appDataFolder` chứa lịch sử và cài đặt (gồm địa chỉ máy chủ).
-- Kiểm thử: backend **142** pytest (`pytest -q` chạy được như CI), Flutter **103** test, `flutter analyze` sạch. Ở CI: XCTest iOS **14/14** (`mobile/ios/RunnerTests`) và test kênh native `mobile/integration_test/native_bridge_test.dart` **9/9** trên simulator iOS (kể cả thu âm và nghe thử); cùng test kênh 9/9 trên emulator Android (micro đã cấp quyền).
-- APK release (khóa debug, không gắn địa chỉ máy chủ): arm64 ~18,7 MB, armv7 ~16,4 MB, x86_64 ~20,0 MB.
+- Kiểm thử: backend **142** pytest (`pytest -q` chạy được như CI), Flutter **117** test, `flutter analyze` sạch. Ở CI: XCTest iOS **18** test (`mobile/ios/RunnerTests`: mã hóa/giải mã, PKCE, URL đăng nhập Google) và test kênh native `mobile/integration_test/native_bridge_test.dart` **10** test trên simulator iOS (kể cả thu âm và nghe thử); cùng test kênh trên emulator Android (micro đã cấp quyền). Lượt CI xanh gần nhất có bộ cài: https://github.com/lupin2498/shazam-clone/actions/runs/44035781191
+- APK release (khóa debug, không gắn địa chỉ máy chủ): arm64 ~19,2 MB, armv7 ~16,9 MB, x86_64 ~20,5 MB.
 
 ## 3. Chưa kiểm chứng (cần làm khi có điều kiện)
 
