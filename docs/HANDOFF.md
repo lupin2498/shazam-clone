@@ -1,4 +1,4 @@
-# Bàn giao phiên — Tìm Nhạc (cập nhật 16/11/2026, phiên 2)
+# Bàn giao phiên — Tìm Nhạc (cập nhật 17/11/2026, phiên 2)
 
 Tài liệu này để một phiên làm việc mới tiếp tục dự án mà không cần đọc lại lịch sử. Đọc kèm [README](../README.md) (cách chạy, cấu hình, API, bản iOS) và [báo cáo kiểm thử](BAO-CAO-KIEM-THU.md).
 
@@ -16,13 +16,15 @@ Làm app theo tài liệu thiết kế "App nhận diện nhạc & truy tìm đa
 ## 2. Trạng thái hiện tại
 
 - Repo `lupin2498/shazam-clone`, nhánh làm việc **`ccr-f60ecfdd-76t6yr`** (đã push; tách từ `claude/gallant-darwin-4ynhg5` ở `a31fae8`). Chưa có PR (người dùng chưa yêu cầu).
-- Đã làm F1–F9 và bản iOS của F11. Chưa làm F10, tài khoản/đồng bộ, ShazamKit, App Attest.
+- Đã làm F1–F10 (F10 trên Android 10+) và F11 ở mức: bản iOS + đồng bộ lịch sử/cài đặt qua Google Drive của người dùng. Chưa có tài khoản riêng của Tìm Nhạc, ShazamKit, App Attest.
 - Phiên 2 thêm:
   - **App iOS** (`mobile/ios/`): lớp native Swift cài đúng các kênh `vn.timnhac/*` như Android, nên mã Dart dùng chung. Đã sửa theo một lượt soát mã độc lập (crash "Nghe thử", thu âm bị ngắt khi có cuộc gọi/cắm tai nghe, phiên âm thanh làm tắt nhạc app khác).
   - **Cài đặt → Máy chủ**: địa chỉ backend chọn lúc chạy (`lib/services/server_address.dart`); bản release không có `API_BASE_URL` thì app bảo người dùng nhập.
   - **Kiểm thử và sửa lỗi** bởi agent test-fix-bug: xem `docs/BAO-CAO-KIEM-THU.md` (bảng lỗi đã/chưa sửa, phần chưa kiểm chứng) và sổ tay `.test-fix-bug/`.
   - **CI build bộ cài**: mỗi lần push có artifact `tim-nhac-android` (APK release 3 ABI) và `tim-nhac-ios` (IPA chưa ký).
-- Kiểm thử: backend **140** pytest (`pytest -q` chạy được như CI), Flutter **76** test, `flutter analyze` sạch. Ở CI: XCTest iOS **14/14** (`mobile/ios/RunnerTests`) và test kênh native `mobile/integration_test/native_bridge_test.dart` **9/9** trên simulator iOS (kể cả thu âm và nghe thử); cùng test kênh 9/9 trên emulator Android (micro đã cấp quyền).
+  - **Nhạc đang phát trên máy** (Android 10+, ngày 17/11): ô Cài đặt nhanh "Tìm Nhạc" → `CaptureConsentActivity` → `PlaybackCaptureService` (foreground `mediaProjection`, `AudioPlaybackCapture`) chạy engine Flutter không giao diện trên `playbackCaptureMain`; kết quả lưu lịch sử (nguồn `playback`) và hiện bằng thông báo, chạm mở bài. Backend nhận `source=playback`.
+  - **Đồng bộ Google Drive** (17/11, theo yêu cầu "đổi tính năng máy chủ sang đồng bộ Google Drive"; người dùng chọn: giữ backend để nhận diện, đồng bộ dữ liệu): đăng nhập Google (Android: Google Identity Services `AuthorizationClient`; iOS: trình duyệt hệ thống + PKCE + Keychain), một file JSON trong `appDataFolder` chứa lịch sử và cài đặt (gồm địa chỉ máy chủ).
+- Kiểm thử: backend **142** pytest (`pytest -q` chạy được như CI), Flutter **103** test, `flutter analyze` sạch. Ở CI: XCTest iOS **14/14** (`mobile/ios/RunnerTests`) và test kênh native `mobile/integration_test/native_bridge_test.dart` **9/9** trên simulator iOS (kể cả thu âm và nghe thử); cùng test kênh 9/9 trên emulator Android (micro đã cấp quyền).
 - APK release (khóa debug, không gắn địa chỉ máy chủ): arm64 ~18,7 MB, armv7 ~16,4 MB, x86_64 ~20,0 MB.
 
 ## 3. Chưa kiểm chứng (cần làm khi có điều kiện)
@@ -32,6 +34,8 @@ Làm app theo tài liệu thiết kế "App nhận diện nhạc & truy tìm đa
 - Android: nhận diện qua micro với âm thanh thật trên máy thật; Play Integrity chạy thật; mẫu link tìm kiếm Zing MP3/NCT trên máy thật.
 - iOS — **chưa chạy trên iPhone thật** (simulator không có cuộc gọi, tai nghe hay app nhạc khác): thu âm với phiên `playAndRecord` + `mixWithOthers` + `measurement`, tiếp tục thu sau cuộc gọi/Siri/đổi tai nghe, "Mở bằng" từ app khác khi app đang tắt, trình chọn tệp, thông báo, quyền mạng nội bộ.
 - Timeout 25 s của app sát trường hợp xấu nhất của backend (2 engine × 10 s) — chưa đo với khóa thật.
+- **Đồng bộ Google Drive chưa chạy với Google thật**: chưa có dự án Google Cloud/OAuth client (README mục "Đồng bộ Google Drive"); mạng của phiên chặn googleapis.com nên Drive REST chỉ test bằng Drive giả lập trong bộ nhớ. Đăng nhập Android cần APK ký bằng khóa đã đăng ký SHA-1 (khóa debug ngẫu nhiên của CI không được).
+- **Nhạc đang phát trên máy chưa chạy trên máy thật**: hộp thoại đồng ý ghi màn hình, ô Cài đặt nhanh, engine Flutter chạy nền và thông báo chưa được thử; app nào chặn thu âm thanh cũng chưa khảo sát. CI chỉ kiểm phương thức kênh (không thể tự bấm đồng ý).
 
 ## 4. Bản đồ code
 
@@ -54,6 +58,9 @@ mobile/lib/
   services/recognizer.dart   ListenSession: thu 12 s (15 s ngân nga), gửi thử 6 s, im lặng, offline
   services/api_client.dart   multipart, SSE (canh im lặng 20 s), mã lỗi tiếng Việt, địa chỉ máy chủ
   services/server_address.dart  kiểm địa chỉ backend: release chỉ https://, trừ máy trong mạng nội bộ
+  services/google_account.dart  tài khoản Google: đăng nhập/xuất, access token (gia hạn im lặng)
+  services/drive_sync.dart   Drive REST (appDataFolder), SyncSnapshot/planSync (gộp), SyncService (lịch, trạng thái)
+  services/playback_recognition.dart  phiên nghe chạy nền cho "Nhạc đang phát trên máy" + nội dung thông báo
   services/native_bridge.dart  hợp đồng kênh vn.timnhac/native, levels, shared_files, connectivity
   services/history.dart      SQLite: history, pending_sample; HistoryRepository
   services/pending_queue.dart  gửi lại mẫu khi có mạng + thông báo
@@ -64,13 +71,16 @@ mobile/android/app/src/main/kotlin/vn/timnhac/app/
   AudioCapture.kt   AudioRecord VOICE_RECOGNITION 44,1 kHz mono, tắt NS/AGC/AEC
   AacEncoder.kt     PCM → AAC-LC 64 kbps ADTS (+ resample)
   AudioFileDecoder.kt  MediaExtractor + MediaCodec: probe, waveform, segment
-  Helpers.kt        PreviewPlayer, IntegrityHelper, Notifier, ConnectivityWatcher
+  Helpers.kt        PreviewPlayer, IntegrityHelper, Notifier (id lịch sử trong thông báo), ConnectivityWatcher
+  RecognizeTileService.kt, CaptureConsentActivity.kt, PlaybackCaptureService.kt   nhạc đang phát trên máy
+  GoogleAuth.kt     đăng nhập Google (AuthorizationClient, scope email + drive.appdata)
 mobile/ios/Runner/
   NativeBridge.swift   các kênh vn.timnhac/*, quyền micro, trình chọn tệp, "Mở bằng", chia sẻ, mở link
   AudioCapture.swift   AVAudioEngine, tự chạy lại sau ngắt/đổi thiết bị
   AacEncoder.swift     AVAudioConverter → AAC-LC 64 kbps ADTS (cùng khung với Android)
   AudioFileDecoder.swift  AVAssetReader: probe, waveform, segment
-  Helpers.swift        PreviewPlayer, Notifier, ConnectivityWatcher
+  Helpers.swift        PreviewPlayer, Notifier (chạm thông báo → id lịch sử), ConnectivityWatcher
+  GoogleAuth.swift     đăng nhập Google: ASWebAuthenticationSession + PKCE, refresh token trong Keychain
 mobile/ios/RunnerTests/RunnerTests.swift   XCTest cho mã hóa/giải mã/đo mức
 mobile/integration_test/native_bridge_test.dart   test kênh native trên emulator/simulator
 .github/workflows/ci.yml   backend, mobile (+APK), android (emulator), ios (IPA + XCTest + kênh)
@@ -91,7 +101,9 @@ mobile/integration_test/native_bridge_test.dart   test kênh native trên emulat
 - `DEMO_MODE=true` trả kết quả mẫu; backend từ chối khởi động nếu bật cùng `ENVIRONMENT=production`.
 - Địa chỉ backend: `--dart-define=API_BASE_URL` lúc build, hoặc Cài đặt → Máy chủ lúc chạy (thắng địa chỉ lúc build). Bản release chỉ gửi qua `https://`, **trừ máy chủ trong mạng nội bộ** (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`, `localhost`, `*.local`) để thử với backend trên máy tính cùng Wi-Fi — đây là nới so với "release chỉ HTTPS" của phiên 1; người dùng có thể bảo siết lại. Quy tắc nằm trong Dart vì engine Flutter không áp cấu hình mạng Android/ATS cho `dart:io`.
 - iOS thu âm bằng `playAndRecord` + `mixWithOthers` + `measurement` (nhạc app khác vẫn phát và micro nghe được, như Android). iOS chưa có App Attest: **giữ `INTEGRITY_MODE` ở `off`/`monitor`** khi còn người dùng iOS.
-- CI: lượt chạy do push không bị hủy khi có push mới (để giữ bộ cài của commit đó); lượt pull request thì hủy. Địa chỉ backend cho bộ cài CI lấy từ biến repo `API_BASE_URL`; khóa ký APK từ các secret `ANDROID_KEYSTORE_*`.
+- CI: lượt chạy do push không bị hủy khi có push mới (để giữ bộ cài của commit đó); lượt pull request thì hủy. Địa chỉ backend cho bộ cài CI lấy từ biến repo `API_BASE_URL`; khóa ký APK từ các secret `ANDROID_KEYSTORE_*`; client OAuth iOS từ biến repo `GOOGLE_IOS_CLIENT_ID`. Log job mobile in SHA-1 chứng chỉ APK.
+- Đồng bộ Drive: chỉ hai scope `email` + `drive.appdata`; Android không nhúng client id (Google nhận qua package + SHA-1). Một file `tim-nhac-sync.json` (định dạng 1) trong `appDataFolder`. Khóa mục lịch sử = `id bài@createdAt (ms)`; xóa ở máy nào để lại dấu xóa (giữ 180 ngày), suy ra từ `syncKnownKeys` (khóa có sau lần đồng bộ trước mà nay thiếu); `historyClearedAt` cho "xóa trên mọi máy"; cài đặt (quốc gia, nền tảng ưu tiên, địa chỉ máy chủ) cùng `updatedAt`, bên sửa sau thắng (dựa trên đồng hồ máy); tối đa 1000 bài. Không đồng bộ: âm thanh, hàng chờ, mã thiết bị, link. Đồng bộ trễ 8 s sau thay đổi lịch sử (dài hơn snack bar "Hoàn tác"), 3 s sau đổi cài đặt, khi mở lại app sau 10 phút. "Xóa dữ liệu" đăng xuất Google trên máy đó.
+- Nhạc đang phát trên máy: chỉ Android 10+ (iOS báo không hỗ trợ). Dùng lại `ListenSession` (nguồn `playback`) trong engine Flutter chạy nền; kênh `vn.timnhac/native` của engine nền chỉ trả lời tập con (thu âm, mạng, thông báo, Integrity, `finishBackgroundTask`). Kết quả là thông báo mang `historyId`; kênh mới `vn.timnhac/notification_taps` (cả iOS) mở bài.
 
 ## 6. Thiết lập môi trường cho phiên mới
 
@@ -123,6 +135,8 @@ Ghi chú môi trường:
 ## 7. Việc tiếp theo đề xuất (theo thứ tự)
 
 1. Xem lượt CI mới nhất của nhánh: job `ios` phải xanh cả XCTest lẫn test kênh trên simulator; nếu đỏ, đọc log bước "Platform channels on the simulator".
+1. Người dùng cấu hình Google Cloud cho đồng bộ Drive (README) và khóa ký APK cố định; thử đăng nhập + khôi phục trên hai máy thật.
+1. Thử "Nhạc đang phát trên máy" trên Android 10–15 thật (TikTok, YouTube, Facebook, Spotify…); ghi app nào chặn thu.
 2. Cài thử APK trên điện thoại Android thật và IPA (ký bằng Sideloadly/AltStore) trên iPhone thật với backend `DEMO_MODE=true` chạy trên máy tính cùng Wi-Fi: thu âm, nghe thử, chọn file, "Mở bằng", hàng chờ offline.
 3. Khi người dùng có khóa: điền `backend/.env`, chạy thử với ACRCloud/AudD thật, đối chiếu định dạng phản hồi (mục 3), chỉnh ngưỡng `ACR_MIN_SCORE`, `ACR_EARLY_MIN_SCORE`, `HUM_MIN_CONFIDENCE`; đo timeout.
 4. Đo chỉ tiêu §10 trên bộ thử 200 bài (100 có lời, 100 không lời); ghi kết quả.

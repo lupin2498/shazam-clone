@@ -37,8 +37,8 @@ App Flutter ──HTTPS──▶ Backend FastAPI ──▶ ACRCloud (chính) →
 | F7 | Lưu mẫu khi mất mạng, tự nhận diện khi có mạng (GD2) | Có. Hàng chờ `pending_sample`, gửi lại khi có mạng, thông báo khi xong |
 | F8 | Ngân nga/huýt sáo (GD2) | Có. Chế độ "Ngân nga" đi thẳng vào bước Cover Song, trả tối đa 3 ứng viên |
 | F9 | Tìm trên web khác có danh sách trắng (GD2) | Có khung: Bandcamp, Jamendo, Internet Archive, FMA, Musopen; tìm kiếm web qua Brave Search, chỉ giữ tên miền trong danh sách trắng (tắt khi chưa có khóa — nhà cung cấp chưa chốt, §13) |
-| F10 | Nhạc phát trong app khác (GD3) | Chưa làm |
-| F11 | Tài khoản, đồng bộ, iOS (GD3) | Có bản iOS (xem [App iOS](#app-ios)); tài khoản và đồng bộ chưa làm |
+| F10 | Nhạc phát trong app khác (GD3) | Có trên Android 10+: ô "Tìm Nhạc" trong Cài đặt nhanh thu âm thanh app khác đang phát, kết quả hiện bằng thông báo (xem [Nhạc đang phát trên máy](#nhạc-đang-phát-trên-máy-android-10)). iOS không cho phép |
+| F11 | Tài khoản, đồng bộ, iOS (GD3) | Có bản iOS (xem [App iOS](#app-ios)) và đồng bộ lịch sử + cài đặt qua Google Drive của người dùng (xem [Đồng bộ Google Drive](#đồng-bộ-google-drive)); chưa có tài khoản riêng của Tìm Nhạc |
 
 Thêm so với tài liệu: `POST /v1/recognitions/{id}/report` cho nút "Báo sai" trên màn hình Kết quả, `GET /v1/tracks/{id}`, và `/admin/reports` để duyệt link bị báo cáo trong 48 giờ.
 
@@ -114,6 +114,42 @@ flutter run        # bản debug tự trỏ về backend trên máy phát triể
 
 Thử trên điện thoại thật khi chưa triển khai backend: chạy backend trên máy tính (`DEMO_MODE=true uvicorn app.main:app --host 0.0.0.0`), rồi nhập `http://<IP máy tính>:8000` vào Cài đặt → Máy chủ.
 
+Khi đã đăng nhập Google, địa chỉ máy chủ được đồng bộ cùng các cài đặt khác: máy mới chỉ cần đăng nhập là có.
+
+### Đồng bộ Google Drive
+
+**Cài đặt → Đồng bộ Google Drive → Đăng nhập Google.** App lưu lịch sử và cài đặt (quốc gia, nền tảng ưu tiên, địa chỉ máy chủ) vào một file JSON trong *thư mục ẩn của app* trên Drive của người dùng (`appDataFolder`: không hiện trong Drive, app khác không đọc được). Cài lại app hoặc dùng máy khác, đăng nhập cùng tài khoản là khôi phục.
+
+- Quyền xin Google: chỉ địa chỉ email và thư mục ẩn của app (`drive.appdata`); app không thấy file nào khác.
+- Không đồng bộ: mẫu âm thanh, hàng chờ offline, mã thiết bị ẩn danh (hạn mức vẫn tính theo từng máy), link của từng bài (tải lại từ backend khi mở).
+- Gộp giữa các máy: mỗi bài một khóa (`id bài@thời điểm`), bài xóa ở một máy để lại dấu xóa (giữ 180 ngày) nên không quay lại; "Xóa dữ liệu" có tùy chọn xóa lịch sử trên mọi máy; cài đặt thì bản sửa sau cùng thắng. Đồng bộ khi đăng nhập, sau mỗi thay đổi (chờ vài giây), khi mở lại app sau 10 phút và khi bấm "Đồng bộ ngay".
+- Đăng xuất có thể xóa luôn bản sao trên Drive. "Xóa dữ liệu" đăng xuất máy này để lịch sử không tải về lại.
+
+Cấu hình một lần trên [Google Cloud Console](https://console.cloud.google.com/) (một dự án cho cả Android và iOS):
+
+1. **APIs & Services → Library**: bật **Google Drive API**.
+2. **OAuth consent screen** (Google Auth Platform): loại *External*, tên app, email hỗ trợ; thêm hai phạm vi `.../auth/userinfo.email` và `.../auth/drive.appdata`. Khi còn ở trạng thái *Testing*, chỉ các tài khoản trong **Test users** đăng nhập được; muốn mọi người dùng được thì *Publish app* (Google có thể yêu cầu xác minh).
+3. **Credentials → Create OAuth client ID → Android**: package `vn.timnhac.app` và **SHA-1 của chứng chỉ ký APK**. Mỗi chứng chỉ một client: khóa ký phát hành của bạn, khóa *App signing* của Google Play nếu phát hành qua Play, khóa debug nếu thử bản debug. App Android không cần nhúng client id: Google nhận app qua package + SHA-1, nên **APK ký bằng khóa debug ngẫu nhiên của CI không đăng nhập được** — hãy đặt các secret `ANDROID_KEYSTORE_*` (log CI in sẵn dòng `SHA-1` để đăng ký).
+4. **Credentials → Create OAuth client ID → iOS**: bundle id `vn.timnhac.app`; lấy *Client ID* (dạng `1234-abc.apps.googleusercontent.com`) đặt vào biến repo `GOOGLE_IOS_CLIENT_ID` (CI dùng khi build IPA) hoặc build tay với `--dart-define=GOOGLE_IOS_CLIENT_ID=...`. Thiếu biến này, mục đồng bộ trên iOS báo "chưa được cấu hình".
+
+Lấy SHA-1 của keystore: `keytool -list -v -keystore upload-keystore.jks -alias <alias>`.
+
+### Nhạc đang phát trên máy (Android 10+)
+
+Nhận diện bài đang phát trong app khác (TikTok, YouTube, Facebook…) mà không phải rời app đó:
+
+1. Thêm ô **Tìm Nhạc** vào Cài đặt nhanh: Cài đặt → Nhạc đang phát trên máy → *Thêm ô vào Cài đặt nhanh* (Android 13+), hoặc kéo thanh thông báo xuống, chạm biểu tượng bút chì và kéo ô vào.
+2. Khi đang xem/nghe, kéo thanh thông báo xuống và chạm ô **Tìm Nhạc**. Lần đầu app xin quyền micro và thông báo, giải thích một lần, rồi Android hỏi quyền "ghi hoặc truyền màn hình" (bắt buộc với việc thu âm thanh nội bộ; app không ghi hình).
+3. App thu khoảng 12 giây âm thanh các app khác đang phát (cùng luồng 6 s/12 s của nút Nghe), kết quả hiện bằng thông báo; chạm thông báo để mở bài và link. Kết quả cũng nằm trong Lịch sử (nguồn `playback`).
+
+Cách làm: `RecognizeTileService` → `CaptureConsentActivity` → `PlaybackCaptureService` (dịch vụ foreground loại `mediaProjection`, `AudioPlaybackCapture`) chạy một engine Flutter không giao diện trên `playbackCaptureMain` (`lib/main.dart`, `lib/services/playback_recognition.dart`).
+
+Giới hạn:
+
+- Chỉ thu âm thanh loại media/game; app có thể chặn việc bị thu (nhiều app có nội dung bản quyền làm vậy) → app báo "Không thu được âm thanh" và gợi ý nghe qua micro.
+- Đưa lên Google Play phải khai báo quyền `FOREGROUND_SERVICE_MEDIA_PROJECTION` (loại dịch vụ foreground *Media projection*) trong Play Console kèm video minh họa.
+- iOS không cho app thu âm thanh của app khác: trên iPhone vẫn nghe qua micro.
+
 Phát hành:
 
 1. Tạo `android/key.properties` (không commit) với `storeFile`, `storePassword`, `keyAlias`, `keyPassword`.
@@ -167,12 +203,15 @@ Khác với Android:
 - iOS không cho app chạy nền để gửi mẫu chờ mạng: hàng chờ được gửi khi mở lại app.
 - File được chọn hay nhận về là bản sao trong thư mục tạm của app, tự xóa ở lần mở app sau.
 - Trình chọn file chỉ mở ứng dụng Tệp: video trong Ảnh (quay màn hình, video đã lưu) phải "Lưu vào Tệp" hoặc "Chia sẻ → Tìm Nhạc" trước.
+- Không có "Nhạc đang phát trên máy" (iOS không cho thu âm thanh app khác).
+- Đăng nhập Google mở trang đăng nhập của Google trong trình duyệt hệ thống (PKCE); refresh token nằm trong Keychain. Cần `GOOGLE_IOS_CLIENT_ID` lúc build.
 
 ## Kiểm thử
 
 ```bash
 cd backend && pytest            # chuẩn hóa/chấm điểm, engine, xếp tầng, adapter, API, SSE, hạn mức, báo cáo
-cd mobile && flutter test       # SSE, sắp xếp link, luồng nghe 6 s/12 s, hàng chờ offline, quét file, địa chỉ máy chủ, giao diện
+cd mobile && flutter test       # SSE, sắp xếp link, luồng nghe 6 s/12 s, hàng chờ offline, quét file, địa chỉ máy chủ,
+                                # nhận diện chạy nền, đồng bộ Drive (hai máy dùng chung một Drive giả lập), giao diện
 ```
 
 Phần native được kiểm trên máy ảo (CI chạy cả hai ở mỗi lần push):
@@ -195,3 +234,5 @@ xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -destination 'p
 - Dùng công cụ migration (ví dụ Alembic) thay cho `CREATE_TABLES=true` khi lược đồ bắt đầu thay đổi.
 - ShazamKit cho Android (GD2, tùy chọn) và iOS (GD3).
 - iOS: thử thu âm trên iPhone thật, App Attest cho backend, Share Extension, khai báo quyền riêng tư và ký để đưa lên TestFlight.
+- Cấu hình Google Cloud cho đồng bộ Drive (mục [Đồng bộ Google Drive](#đồng-bộ-google-drive)) và thử đăng nhập trên máy thật với APK ký bằng khóa cố định.
+- Thử "Nhạc đang phát trên máy" trên điện thoại Android 10–15 thật với vài app phổ biến; khai báo loại dịch vụ foreground trong Play Console.
