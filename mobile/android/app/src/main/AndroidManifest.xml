@@ -4,8 +4,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Asked only when the user taps "Nghe" for the first time (section 10). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- Asked only when a sample is queued offline (GD2). -->
+    <!-- Asked only when a sample is queued offline (GD2) or before recognising music in other apps. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- "Nhạc đang phát trên máy" (Android 10+): a foreground service holds the media projection
+         used to capture what other apps play (PlaybackCaptureService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <!-- No storage permission: files are picked with the system picker. -->
 
     <!-- Devices without a microphone can still recognise files. -->
@@ -51,6 +55,33 @@
                 <data android:mimeType="audio/*" />
             </intent-filter>
         </activity>
+        <!-- Asks for the media projection, then starts PlaybackCaptureService. Its own task, so
+             finishing it returns to the app the user was watching. -->
+        <activity
+            android:name=".CaptureConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/CaptureTheme" />
+        <service
+            android:name=".PlaybackCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <!-- Quick Settings tile, Android 10+ only (values-v29/bools.xml). -->
+        <service
+            android:name=".RecognizeTileService"
+            android:enabled="@bool/playback_capture_supported"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_music"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="false" />
+        </service>
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

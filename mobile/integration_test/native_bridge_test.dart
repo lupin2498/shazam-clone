@@ -152,6 +152,24 @@ void main() {
     await shared.cancel();
   });
 
+  testWidgets('background capture, notifications and Google answer on every platform', (tester) async {
+    // Android 10+ can capture other apps; iOS cannot.
+    expect(await native.playbackCaptureSupported(), Platform.isAndroid);
+    final taps = native.notificationTaps.listen((_) {});
+    await taps.cancel();
+    await native.notify('Tìm Nhạc', 'Kiểm tra thông báo', historyId: 1);
+    await native.finishBackgroundTask();
+    // Nobody is signed in: a silent request needs the user, or Google is not set up here
+    // (no Play services on the emulator image, no iOS client id in this build).
+    try {
+      final auth = await native.googleAuthorize(interactive: false).timeout(const Duration(seconds: 30));
+      expect(auth, isNull);
+    } on PlatformException catch (e) {
+      expect(e.code, isIn(['not_configured', 'google_error', 'network']));
+    }
+    await native.googleSignOut();
+  });
+
   testWidgets('microphone capture, or a permission error without the permission', (tester) async {
     if (!await native.hasMicPermission()) {
       await expectLater(

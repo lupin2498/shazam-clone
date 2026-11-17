@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
+import 'package:http/http.dart' as http;
 
 import '../config.dart';
 import '../models/app_config.dart';
 import 'api_client.dart';
+import 'drive_sync.dart';
+import 'google_account.dart';
 import 'history.dart';
 import 'integrity.dart';
 import 'native_bridge.dart';
@@ -61,7 +64,24 @@ class AppServices {
     required this.pending,
     required this.config,
     required this.integrity,
-  }) : results = ResultHandler(history);
+    GoogleAccount? account,
+    SyncService? sync,
+    http.Client? httpClient,
+  }) : results = ResultHandler(history) {
+    final client = httpClient ?? http.Client();
+    this.account = account ?? GoogleAccount(native: native, settings: settings, client: client);
+    this.sync = sync ??
+        SyncService(
+          account: this.account,
+          drive: DriveClient(client),
+          settings: settings,
+          history: history,
+          onServerChanged: () async {
+            await reconnect();
+            unawaited(pending.process());
+          },
+        );
+  }
 
   final NativeBridge native;
   final SettingsStore settings;
@@ -71,6 +91,13 @@ class AppServices {
   final ConfigRepository config;
   final IntegrityService integrity;
   final ResultHandler results;
+
+  /// Google account and Drive sync of the history and settings.
+  late final GoogleAccount account;
+  late final SyncService sync;
+
+  /// Android 10+: music playing in other apps can be recognised (Quick Settings tile).
+  bool playbackCaptureSupported = false;
 
   Set<String> _installed = const {};
 
@@ -105,6 +132,9 @@ class AppServices {
       config: ConfigRepository(api, settings),
       integrity: integrity,
     );
+    try {
+      services.playbackCaptureSupported = await bridge.playbackCaptureSupported();
+    } catch (_) {}
     unawaited(services._warmUp());
     return services;
   }
@@ -112,6 +142,14 @@ class AppServices {
   Future<void> _warmUp() async {
     await reconnect();
     pending.start();
+    sync.start();
+  }
+
+  /// The app is in the foreground again: results recognised in the background (Quick Settings
+  /// tile, offline queue) are in the database, and other devices may have synced.
+  Future<void> onResume() async {
+    await history.load();
+    sync.onResume();
   }
 
   /// Loads `/v1/config` and what depends on it; also called after the backend address

@@ -27,6 +27,38 @@ class PickedFile {
   final String? name;
 }
 
+/// Access to the Google account used by "Đồng bộ Google Drive".
+class GoogleAuthorization {
+  const GoogleAuthorization({required this.accessToken, this.email, this.expiresIn});
+
+  final String accessToken;
+
+  /// Known on Android; on iOS the Dart side asks Google (userinfo).
+  final String? email;
+
+  /// Seconds the token stays valid; null when the platform does not say (Android caches and
+  /// renews tokens itself, asking again is cheap).
+  final int? expiresIn;
+
+  static GoogleAuthorization? fromMap(Map<Object?, Object?>? m) {
+    final token = m?['accessToken'];
+    if (token is! String || token.isEmpty) return null;
+    return GoogleAuthorization(
+      accessToken: token,
+      email: m!['email'] as String?,
+      expiresIn: (m['expiresIn'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// `requestAddQuickSettingsTile` results (Android StatusBarManager codes, -1 = not available).
+abstract final class QuickTileResult {
+  static const unavailable = -1;
+  static const notAdded = 0;
+  static const alreadyAdded = 1;
+  static const added = 2;
+}
+
 class AudioProbe {
   const AudioProbe({required this.durationMs, this.name});
 
@@ -34,12 +66,17 @@ class AudioProbe {
   final String? name;
 }
 
-/// Everything the app needs from Android. Implemented over platform channels
-/// (android/app/src/main/kotlin/vn/timnhac/app/MainActivity.kt) and faked in tests.
+/// Everything the app needs from the platform. Implemented over platform channels by
+/// android/app/src/main/kotlin/vn/timnhac/app/MainActivity.kt and ios/Runner/NativeBridge.swift
+/// (the same contract on both), and faked in tests. The background capture engine on Android
+/// answers a subset (PlaybackCaptureService.kt).
 abstract class NativeBridge {
   Stream<double> get levels;
   Stream<PickedFile> get sharedFiles;
   Stream<bool> get connectivity;
+
+  /// Taps on a result notification: the id of the history entry to open.
+  Stream<int> get notificationTaps;
 
   Future<bool> hasMicPermission();
   Future<bool> shouldShowMicRationale();
@@ -62,10 +99,40 @@ abstract class NativeBridge {
   Future<void> shareText(String text, {String? title});
   Future<Set<String>> installedPackages(List<String> packages);
   Future<bool> isOnline();
-  Future<void> notify(String title, String body);
+
+  /// Tapping the notification opens [historyId] (through [notificationTaps]) when given.
+  Future<void> notify(String title, String body, {int? historyId});
   Future<bool> requestNotificationPermission();
   Future<bool> integrityPrepare(String cloudProjectNumber);
   Future<String?> integrityToken(String requestHash);
+
+  /// Android 10+: music other apps are playing can be recognised ("Nhạc đang phát trên máy").
+  Future<bool> playbackCaptureSupported();
+
+  /// Asks for consent and recognises what other apps play; the result arrives as a
+  /// notification. False when not supported.
+  Future<bool> startPlaybackCapture();
+
+  /// Android 13+: the system dialog adding the Quick Settings tile. A [QuickTileResult] code.
+  Future<int> requestAddQuickSettingsTile();
+
+  /// The background capture engine is done (does nothing in the app).
+  Future<void> finishBackgroundTask();
+
+  /// Google account for Drive sync (scopes: e-mail, the app's hidden Drive folder). Null when the
+  /// user cancelled, or when [interactive] is false and Google needs to show something.
+  /// [invalidToken] is a token the Drive API rejected. [iosClientId] is the OAuth client of the
+  /// iOS app (Android needs none). Throws [PlatformException] with code `not_configured`,
+  /// `network` or `google_error`.
+  Future<GoogleAuthorization?> googleAuthorize({
+    required bool interactive,
+    String? email,
+    String? invalidToken,
+    String? iosClientId,
+  });
+
+  /// Forgets the account on this device and revokes the app's access.
+  Future<void> googleSignOut({String? email, String? accessToken, String? iosClientId});
 }
 
 class MethodChannelNativeBridge implements NativeBridge {
@@ -73,10 +140,12 @@ class MethodChannelNativeBridge implements NativeBridge {
   static const _levels = EventChannel('vn.timnhac/levels');
   static const _shared = EventChannel('vn.timnhac/shared_files');
   static const _connectivity = EventChannel('vn.timnhac/connectivity');
+  static const _notificationTaps = EventChannel('vn.timnhac/notification_taps');
 
   Stream<double>? _levelStream;
   Stream<PickedFile>? _sharedStream;
   Stream<bool>? _connectivityStream;
+  Stream<int>? _tapStream;
 
   @override
   Stream<double> get levels =>
@@ -91,6 +160,10 @@ class MethodChannelNativeBridge implements NativeBridge {
   @override
   Stream<bool> get connectivity =>
       _connectivityStream ??= _connectivity.receiveBroadcastStream().map((e) => e as bool).asBroadcastStream();
+
+  @override
+  Stream<int> get notificationTaps =>
+      _tapStream ??= _notificationTaps.receiveBroadcastStream().map((e) => (e as num).toInt()).asBroadcastStream();
 
   Future<T?> _call<T>(String method, [Map<String, Object?>? args]) => _channel.invokeMethod<T>(method, args);
 
@@ -168,7 +241,8 @@ class MethodChannelNativeBridge implements NativeBridge {
   Future<bool> isOnline() async => await _call<bool>('isOnline') ?? true;
 
   @override
-  Future<void> notify(String title, String body) => _call('notify', {'title': title, 'body': body});
+  Future<void> notify(String title, String body, {int? historyId}) =>
+      _call('notify', {'title': title, 'body': body, 'historyId': historyId});
 
   @override
   Future<bool> requestNotificationPermission() async => await _call<bool>('requestNotificationPermission') ?? false;
@@ -179,4 +253,41 @@ class MethodChannelNativeBridge implements NativeBridge {
 
   @override
   Future<String?> integrityToken(String requestHash) => _call<String>('integrityToken', {'requestHash': requestHash});
+
+  @override
+  Future<bool> playbackCaptureSupported() async {
+    try {
+      return await _call<bool>('playbackCaptureSupported') ?? false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> startPlaybackCapture() async => await _call<bool>('startPlaybackCapture') ?? false;
+
+  @override
+  Future<int> requestAddQuickSettingsTile() async =>
+      await _call<int>('requestAddQuickSettingsTile') ?? QuickTileResult.unavailable;
+
+  @override
+  Future<void> finishBackgroundTask() => _call('finishBackgroundTask');
+
+  @override
+  Future<GoogleAuthorization?> googleAuthorize({
+    required bool interactive,
+    String? email,
+    String? invalidToken,
+    String? iosClientId,
+  }) async =>
+      GoogleAuthorization.fromMap(await _call<Map<Object?, Object?>>('googleAuthorize', {
+        'interactive': interactive,
+        'email': email,
+        'invalidToken': invalidToken,
+        'iosClientId': iosClientId,
+      }));
+
+  @override
+  Future<void> googleSignOut({String? email, String? accessToken, String? iosClientId}) =>
+      _call('googleSignOut', {'email': email, 'accessToken': accessToken, 'iosClientId': iosClientId});
 }

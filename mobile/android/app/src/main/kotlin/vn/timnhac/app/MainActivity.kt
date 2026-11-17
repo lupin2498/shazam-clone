@@ -1,9 +1,12 @@
 package vn.timnhac.app
 
 import android.Manifest
+import android.app.StatusBarManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -31,11 +34,14 @@ class MainActivity : FlutterActivity() {
     private lateinit var preview: PreviewPlayer
     private lateinit var integrity: IntegrityHelper
     private lateinit var notifier: Notifier
+    private lateinit var googleAuth: GoogleAuth
     private var connectivity: ConnectivityWatcher? = null
 
     private var levelSink: EventChannel.EventSink? = null
     private var sharedSink: EventChannel.EventSink? = null
     private var pendingShared: Map<String, Any?>? = null
+    private var tapSink: EventChannel.EventSink? = null
+    private var pendingTap: Int? = null
     private var micResult: MethodChannel.Result? = null
     private var notificationResult: MethodChannel.Result? = null
     private var pickResult: MethodChannel.Result? = null
@@ -43,11 +49,12 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
-        capture = AudioCapture { level -> main.post { levelSink?.success(level) } }
+        capture = AudioCapture(onLevel = { level -> main.post { levelSink?.success(level) } })
         decoder = AudioFileDecoder(applicationContext)
         preview = PreviewPlayer(applicationContext)
         integrity = IntegrityHelper(applicationContext)
         notifier = Notifier(applicationContext)
+        googleAuth = GoogleAuth(this)
 
         MethodChannel(messenger, "vn.timnhac/native").setMethodCallHandler(::onMethodCall)
         EventChannel(messenger, "vn.timnhac/levels").setStreamHandler(object : EventChannel.StreamHandler {
@@ -62,6 +69,15 @@ class MainActivity : FlutterActivity() {
             }
             override fun onCancel(arguments: Any?) { sharedSink = null }
         })
+        // Taps on a result notification: the history entry to open.
+        EventChannel(messenger, "vn.timnhac/notification_taps").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                tapSink = events
+                pendingTap?.let { events.success(it) }
+                pendingTap = null
+            }
+            override fun onCancel(arguments: Any?) { tapSink = null }
+        })
         EventChannel(messenger, "vn.timnhac/connectivity").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
                 connectivity = ConnectivityWatcher(applicationContext) { online -> main.post { events.success(online) } }
@@ -73,12 +89,23 @@ class MainActivity : FlutterActivity() {
             }
         })
         handleShareIntent(intent)
+        handleNotificationTap(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShareIntent(intent)
+        handleNotificationTap(intent)
+    }
+
+    private fun handleNotificationTap(intent: Intent?) {
+        if (intent?.hasExtra(EXTRA_OPEN_HISTORY) != true) return
+        val id = intent.getIntExtra(EXTRA_OPEN_HISTORY, -1)
+        intent.removeExtra(EXTRA_OPEN_HISTORY) // not again after a configuration change
+        if (id < 0) return
+        val sink = tapSink
+        if (sink != null) sink.success(id) else pendingTap = id
     }
 
     override fun onDestroy() {
@@ -123,12 +150,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun encodePayload(pcm: ShortArray, sampleRate: Int): Map<String, Any> = mapOf(
-        "aac" to AacEncoder.encode(pcm, sampleRate),
-        "rms" to AudioCapture.rms(pcm),
-        "durationMs" to (pcm.size.toLong() * 1000 / sampleRate).toInt(),
-    )
-
     private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "hasMicPermission" -> result.success(hasPermission(Manifest.permission.RECORD_AUDIO))
@@ -148,9 +169,9 @@ class MainActivity : FlutterActivity() {
                 result.success(capture.start(call.argument<Int>("maxSeconds") ?: 16))
             }
             "snapshotRecording" -> background(result) {
-                encodePayload(capture.snapshot(call.argument<Int>("maxMs") ?: 6000), capture.sampleRate)
+                AudioCapture.encodePayload(capture.snapshot(call.argument<Int>("maxMs") ?: 6000), capture.sampleRate)
             }
-            "stopRecording" -> background(result) { encodePayload(capture.stop(), capture.sampleRate) }
+            "stopRecording" -> background(result) { AudioCapture.encodePayload(capture.stop(), capture.sampleRate) }
             "cancelRecording" -> {
                 capture.cancel()
                 result.success(null)
@@ -181,7 +202,7 @@ class MainActivity : FlutterActivity() {
                     (call.argument<Number>("startMs") ?: 0).toLong(),
                     (call.argument<Number>("durationMs") ?: 12000).toLong(),
                 )
-                encodePayload(segment.pcm, segment.sampleRate)
+                AudioCapture.encodePayload(segment.pcm, segment.sampleRate)
             }
             "previewPlay" -> {
                 try {
@@ -214,9 +235,29 @@ class MainActivity : FlutterActivity() {
             }
             "isOnline" -> result.success(ConnectivityWatcher.isOnline(this))
             "notify" -> {
-                notifier.show(call.argument<String>("title") ?: "", call.argument<String>("body") ?: "")
+                notifier.show(
+                    call.argument<String>("title") ?: "",
+                    call.argument<String>("body") ?: "",
+                    call.argument<Int>("historyId"),
+                )
                 result.success(null)
             }
+            "playbackCaptureSupported" -> result.success(Build.VERSION.SDK_INT >= 29)
+            "startPlaybackCapture" -> {
+                if (Build.VERSION.SDK_INT < 29) return result.success(false)
+                startActivity(Intent(this, CaptureConsentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                result.success(true)
+            }
+            "requestAddQuickSettingsTile" -> requestAddTile(result)
+            "googleAuthorize" -> googleAuth.authorize(
+                call.argument<Boolean>("interactive") ?: false,
+                call.argument<String>("email"),
+                call.argument<String>("invalidToken"),
+                result,
+            )
+            "googleSignOut" -> googleAuth.signOut(call.argument<String>("email"), call.argument<String>("accessToken"), result)
+            // Only the background capture engine has work to finish.
+            "finishBackgroundTask" -> result.success(null)
             "requestNotificationPermission" -> {
                 if (Build.VERSION.SDK_INT < 33 || hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
                     return result.success(true)
@@ -237,6 +278,26 @@ class MainActivity : FlutterActivity() {
                 runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
             )
             else -> result.notImplemented()
+        }
+    }
+
+    /**
+     * Android 13+: the system dialog that adds the "Tìm Nhạc" tile to Quick Settings. Answers the
+     * StatusBarManager result code (2 added, 1 already there, 0 refused, negative on error), or -1
+     * below Android 13 where users add tiles by editing Quick Settings.
+     */
+    private fun requestAddTile(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < 33) return result.success(-1)
+        val manager = getSystemService(StatusBarManager::class.java) ?: return result.success(-1)
+        try {
+            manager.requestAddTileService(
+                ComponentName(this, RecognizeTileService::class.java),
+                getString(R.string.tile_label),
+                Icon.createWithResource(this, R.drawable.ic_stat_music),
+                mainExecutor,
+            ) { code -> result.success(code) }
+        } catch (e: Exception) {
+            result.success(-1)
         }
     }
 
@@ -287,6 +348,7 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (googleAuth.onActivityResult(requestCode, resultCode, data)) return
         if (requestCode != REQ_PICK) return
         val result = pickResult ?: return
         pickResult = null
@@ -299,6 +361,8 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        /** Int extra of a result notification's intent: the history entry to open. */
+        const val EXTRA_OPEN_HISTORY = "vn.timnhac.OPEN_HISTORY"
         private const val REQ_MIC = 4101
         private const val REQ_NOTIFICATIONS = 4102
         private const val REQ_PICK = 4103

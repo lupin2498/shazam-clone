@@ -19,6 +19,14 @@ String defaultApiBaseUrl() {
   return defaultTargetPlatform == TargetPlatform.iOS ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
 }
 
+/// OAuth client of the iOS app for "Đồng bộ Google Drive" (Google Cloud Console → Credentials →
+/// OAuth client ID, type iOS, bundle id vn.timnhac.app), e.g. `1234-abcd.apps.googleusercontent.com`:
+///
+///     flutter build ios --dart-define=GOOGLE_IOS_CLIENT_ID=...
+///
+/// Android needs none: Google recognises the app by package name and signing certificate.
+const String kGoogleIosClientId = String.fromEnvironment('GOOGLE_IOS_CLIENT_ID');
+
 /// Sent as `X-App-Version`; keep in sync with `version:` in pubspec.yaml.
 const String kAppVersion = '1.0.0';
 

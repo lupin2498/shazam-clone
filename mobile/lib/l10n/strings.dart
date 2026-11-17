@@ -143,4 +143,55 @@ abstract final class S {
   static const notifyMatchedTitle = 'Đã nhận diện bài hát';
   static const notifyNoMatchTitle = 'Không nhận ra bài hát';
   static const notifyNoMatchBody = 'Mẫu đã lưu khi mất mạng không khớp bài nào.';
+
+  // Music playing in other apps (Android 10+, Quick Settings tile)
+  static const bgNoMatchBody = 'Nhạc đang phát trên máy không khớp bài nào.';
+  static const bgSilentTitle = 'Không thu được âm thanh';
+  static const bgSilentBody =
+      'Không có nhạc đang phát, hoặc app đang phát chặn việc thu âm thanh. Hãy thử nghe qua micro.';
+  static const bgFailedTitle = 'Chưa nhận diện được';
+  static const playbackSection = 'Nhạc đang phát trên máy';
+  static const playbackHint =
+      'Nhận diện nhạc trong video hay app khác mà không phải rời app đó: kéo thanh thông báo xuống '
+      'và chạm ô "Tìm Nhạc" trong Cài đặt nhanh. Kết quả hiện bằng thông báo. '
+      'Một số app chặn việc thu âm thanh của chúng.';
+  static const playbackAddTile = 'Thêm ô vào Cài đặt nhanh';
+  static const playbackAddTileManual =
+      'Kéo thanh thông báo xuống hết cỡ, chạm biểu tượng bút chì rồi kéo ô "Tìm Nhạc" vào.';
+  static const playbackTileAdded = 'Đã thêm ô "Tìm Nhạc" vào Cài đặt nhanh';
+  static const playbackTileExists = 'Ô "Tìm Nhạc" đã có trong Cài đặt nhanh';
+  static const playbackListenNow = 'Nghe ngay nhạc đang phát nền';
+  static const playbackListenNowHint = 'Cho nhạc phát trong app khác (chạy nền) rồi chạm vào đây.';
+
+  // Google Drive sync
+  static const syncSection = 'Đồng bộ Google Drive';
+  static const syncSignIn = 'Đăng nhập Google';
+  static const syncSignInHint =
+      'Lưu lịch sử và cài đặt (gồm địa chỉ máy chủ) vào thư mục riêng của Tìm Nhạc trên Google Drive '
+      'của bạn. Cài lại app hay dùng máy khác sẽ tự khôi phục.';
+  static const syncNotConfigured = 'Bản cài này chưa được cấu hình đăng nhập Google.';
+  static const syncNow = 'Đồng bộ ngay';
+  static const syncing = 'Đang đồng bộ…';
+  static const syncNever = 'Chưa đồng bộ lần nào';
+  static String syncedAt(String when) => 'Đã đồng bộ $when';
+  static const syncNeedsSignIn = 'Phiên đăng nhập đã hết hạn. Chạm để đăng nhập lại.';
+  static const syncOffline = 'Chưa đồng bộ được: không có mạng.';
+  static const syncDriveFull = 'Google Drive đã đầy, không lưu thêm được.';
+  static const syncFailed = 'Chưa đồng bộ được, app sẽ thử lại sau.';
+  static const syncNoDriveAccess =
+      'Chưa cho phép Tìm Nhạc dùng Google Drive. Chạm để đăng nhập lại và đánh dấu quyền Drive.';
+  static const syncNewerFormat = 'Dữ liệu trên Drive do bản app mới hơn tạo. Hãy cập nhật app.';
+  static const syncDeleteRemoteFailed =
+      'Đã đăng xuất, nhưng chưa xóa được bản sao trên Google Drive (không có mạng).';
+  static const serverSynced = 'đồng bộ qua Google Drive';
+  static const syncSignInFailed = 'Không đăng nhập được Google. Thử lại sau.';
+  static const syncSignInNotConfigured =
+      'Google chưa nhận ứng dụng này (thiếu cấu hình OAuth). Xem hướng dẫn trong README.';
+  static const syncSignOut = 'Đăng xuất';
+  static const syncSignOutTitle = 'Đăng xuất Google?';
+  static const syncSignOutBody = 'Lịch sử và cài đặt vẫn ở trên máy này nhưng không đồng bộ nữa.';
+  static const syncDeleteRemote = 'Xóa cả bản sao trên Google Drive';
+  static const syncRestored = 'Đã khôi phục lịch sử và cài đặt từ Google Drive';
+  static const clearDataSyncedHint = 'Máy này cũng đăng xuất Google để dữ liệu không tải về lại.';
+  static const clearDataEverywhere = 'Xóa cả lịch sử đã đồng bộ trên mọi máy';
 }

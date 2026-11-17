@@ -31,7 +31,8 @@ async def create_recognition(
     response: Response,
     audio: UploadFile = File(..., description="AAC (ADTS) sample, at most 15 s"),
     mode: Literal["auto", "hum"] = Form("auto"),
-    source: Literal["mic", "file", "hum"] = Form("mic"),
+    # playback: audio of another app on the phone, captured on Android 10+ (AudioPlaybackCapture).
+    source: Literal["mic", "file", "hum", "playback"] = Form("mic"),
     stage: Literal["early", "full"] = Form("full"),
     session_id: str | None = Form(None, max_length=64),
     filename_hint: str | None = Form(None, max_length=200),

@@ -11,6 +11,7 @@ import '../widgets/common.dart';
 import '../widgets/waveform.dart';
 import 'flows.dart';
 import 'history_screen.dart';
+import 'result_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'trim_screen.dart';
@@ -36,6 +37,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   ListenMode _mode = ListenMode.listen;
   StreamSubscription<PickedFile>? _shared;
+  StreamSubscription<int>? _taps;
+  AppLifecycleListener? _lifecycle;
 
   /// "OK" on the outdated-app banner hides it until the app is started again.
   bool _outdatedDismissed = false;
@@ -49,11 +52,27 @@ class _HomeScreenState extends State<HomeScreen> {
       Navigator.of(context).popUntil((r) => r.isFirst);
       Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TrimScreen(file: file)));
     });
+    // A result notification (background recognition, offline queue) opens its entry.
+    _taps ??= AppScope.of(context).native.notificationTaps.listen(_openEntry, onError: (Object _) {});
+    final services = AppScope.of(context);
+    _lifecycle ??= AppLifecycleListener(onResume: () => unawaited(services.onResume()));
+  }
+
+  Future<void> _openEntry(int id) async {
+    final history = AppScope.of(context).history;
+    await history.load(); // saved by the background engine while this list was in memory
+    if (!mounted) return;
+    final entry = history.entries.where((e) => e.id == id).firstOrNull;
+    if (entry == null) return;
+    Navigator.of(context).popUntil((r) => r.isFirst);
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ResultScreen(entry: entry)));
   }
 
   @override
   void dispose() {
     _shared?.cancel();
+    _taps?.cancel();
+    _lifecycle?.dispose();
     super.dispose();
   }
 

@@ -5,6 +5,9 @@ import 'package:material_ui/material_ui.dart';
 import '../config.dart';
 import '../l10n/strings.dart';
 import '../services/app_services.dart';
+import '../services/drive_sync.dart';
+import '../services/google_account.dart';
+import '../services/native_bridge.dart';
 import '../services/server_address.dart';
 import '../widgets/common.dart';
 
@@ -36,7 +39,7 @@ class SettingsScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text(S.settings)),
       body: ListenableBuilder(
-        listenable: Listenable.merge([settings, services.config]),
+        listenable: Listenable.merge([settings, services.config, services.sync, services.account]),
         builder: (context, _) {
           final config = services.config.value;
           final preferred = settings.preferredPlatforms;
@@ -46,6 +49,8 @@ class SettingsScreen extends StatelessWidget {
           final theme = Theme.of(context);
           return ListView(
             children: [
+              SyncSection(services: services),
+              const Divider(height: 32),
               ListTile(
                 title: Text(S.preferredPlatforms, style: theme.textTheme.titleMedium),
                 subtitle: const Text(S.preferredHint),
@@ -114,9 +119,29 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.dns_outlined),
                 title: const Text(S.server),
-                subtitle: Text(serverLabel(services)),
+                subtitle: Text(services.account.signedIn
+                    ? '${serverLabel(services)} · ${S.serverSynced}'
+                    : serverLabel(services)),
                 onTap: () => _editServer(context),
               ),
+              if (services.playbackCaptureSupported) ...[
+                const Divider(height: 32),
+                ListTile(
+                  title: Text(S.playbackSection, style: theme.textTheme.titleMedium),
+                  subtitle: const Text(S.playbackHint),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.dashboard_customize_outlined),
+                  title: const Text(S.playbackAddTile),
+                  onTap: () => _addTile(context),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.queue_music),
+                  title: const Text(S.playbackListenNow),
+                  subtitle: const Text(S.playbackListenNowHint),
+                  onTap: () => services.native.startPlaybackCapture(),
+                ),
+              ],
               const Divider(height: 32),
               ListTile(
                 leading: const Icon(Icons.privacy_tip_outlined),
@@ -168,24 +193,200 @@ class SettingsScreen extends StatelessWidget {
     if (context.mounted) showSnack(context, connected ? S.serverConnected : S.serverSavedOffline);
   }
 
+  /// Android 13+ adds the tile from a system dialog; older versions get the manual steps.
+  Future<void> _addTile(BuildContext context) async {
+    final native = AppScope.of(context).native;
+    int code;
+    try {
+      code = await native.requestAddQuickSettingsTile();
+    } catch (_) {
+      code = QuickTileResult.unavailable;
+    }
+    if (!context.mounted) return;
+    switch (code) {
+      case QuickTileResult.added:
+        showSnack(context, S.playbackTileAdded);
+      case QuickTileResult.alreadyAdded:
+        showSnack(context, S.playbackTileExists);
+      case QuickTileResult.notAdded:
+        break; // the user said no
+      default:
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text(S.playbackAddTile),
+            content: const Text(S.playbackAddTileManual),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text(S.ok))],
+          ),
+        );
+    }
+  }
+
   Future<void> _clear(BuildContext context) async {
     final services = AppScope.of(context);
+    // Signed in, the history would come back from Drive: this device signs out too.
+    final signedIn = services.account.signedIn;
+    var everywhere = false;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text(S.clearDataConfirm),
-        content: const Text(S.clearDataHint),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text(S.cancel)),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text(S.clear)),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text(S.clearDataConfirm),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(S.clearDataHint),
+              if (signedIn) ...[
+                const SizedBox(height: 8),
+                const Text(S.clearDataSyncedHint),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: everywhere,
+                  onChanged: (v) => setState(() => everywhere = v ?? false),
+                  title: const Text(S.clearDataEverywhere),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text(S.cancel)),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text(S.clear)),
+          ],
+        ),
       ),
     );
     if (ok != true) return;
+    if (signedIn) {
+      if (everywhere) await services.sync.clearEverywhere();
+      await services.sync.signOut();
+    }
     await services.history.clearAll();
     await services.settings.reset();
     if (context.mounted) showSnack(context, S.deleted);
   }
+}
+
+/// "Đồng bộ Google Drive": sign in, status of the last sync, sign out.
+class SyncSection extends StatelessWidget {
+  const SyncSection({super.key, required this.services});
+
+  final AppServices services;
+
+  @override
+  Widget build(BuildContext context) {
+    final account = services.account;
+    final sync = services.sync;
+    final header = ListTile(title: Text(S.syncSection, style: Theme.of(context).textTheme.titleMedium));
+    if (!account.configured) {
+      return Column(children: [
+        header,
+        const ListTile(leading: Icon(Icons.cloud_off_outlined), title: Text(S.syncNotConfigured)),
+      ]);
+    }
+    if (!account.signedIn) {
+      return Column(children: [
+        header,
+        ListTile(
+          leading: const Icon(Icons.cloud_outlined),
+          title: const Text(S.syncSignIn),
+          subtitle: const Text(S.syncSignInHint),
+          onTap: () => _signIn(context),
+        ),
+      ]);
+    }
+    final needsSignIn = sync.state == SyncState.needsSignIn || sync.state == SyncState.noDriveAccess;
+    return Column(children: [
+      header,
+      ListTile(
+        leading: Icon(needsSignIn ? Icons.cloud_off_outlined : Icons.cloud_done_outlined),
+        title: Text(account.email ?? ''),
+        subtitle: Text(syncStatusText(sync, DateTime.now())),
+        trailing: sync.state == SyncState.syncing
+            ? const SizedBox.square(dimension: 24, child: CircularProgressIndicator(strokeWidth: 2))
+            : IconButton(tooltip: S.syncNow, icon: const Icon(Icons.sync), onPressed: () => sync.sync()),
+        onTap: needsSignIn ? () => _signIn(context) : null,
+      ),
+      ListTile(
+        leading: const Icon(Icons.logout),
+        title: const Text(S.syncSignOut),
+        onTap: () => _signOut(context),
+      ),
+    ]);
+  }
+
+  Future<void> _signIn(BuildContext context) async {
+    final sync = services.sync;
+    try {
+      final ok = await sync.signIn();
+      if (ok && sync.lastRestored && context.mounted) showSnack(context, S.syncRestored);
+    } on GoogleAuthException catch (e) {
+      if (!context.mounted) return;
+      showSnack(
+        context,
+        e.code == 'not_configured'
+            ? S.syncSignInNotConfigured
+            : e.isNetwork
+                ? S.syncOffline
+                : S.syncSignInFailed,
+      );
+    }
+  }
+
+  Future<void> _signOut(BuildContext context) async {
+    var deleteRemote = false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text(S.syncSignOutTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(S.syncSignOutBody),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: deleteRemote,
+                onChanged: (v) => setState(() => deleteRemote = v ?? false),
+                title: const Text(S.syncDeleteRemote),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text(S.cancel)),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text(S.syncSignOut)),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    final deleted = await services.sync.signOut(deleteRemote: deleteRemote);
+    if (deleteRemote && !deleted && context.mounted) showSnack(context, S.syncDeleteRemoteFailed);
+  }
+}
+
+/// The status line under the account: what the last sync did, or why it could not.
+String syncStatusText(SyncService sync, DateTime now) => switch (sync.state) {
+      SyncState.syncing => S.syncing,
+      SyncState.offline => S.syncOffline,
+      SyncState.needsSignIn => S.syncNeedsSignIn,
+      SyncState.noDriveAccess => S.syncNoDriveAccess,
+      SyncState.driveFull => S.syncDriveFull,
+      SyncState.newerFormat => S.syncNewerFormat,
+      SyncState.failed => S.syncFailed,
+      SyncState.idle || SyncState.ok =>
+        sync.lastSyncedAt == null ? S.syncNever : S.syncedAt(formatSyncTime(sync.lastSyncedAt!, now)),
+    };
+
+/// "lúc 14:05" today, "lúc 14:05 ngày 16/11" otherwise.
+String formatSyncTime(DateTime t, DateTime now) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final time = 'lúc ${two(t.hour)}:${two(t.minute)}';
+  final sameDay = t.year == now.year && t.month == now.month && t.day == now.day;
+  return sameDay ? time : '$time ngày ${two(t.day)}/${two(t.month)}';
 }
 
 /// "Máy chủ": the backend address, checked by [ServerAddress.parse] before it is accepted.
@@ -287,10 +488,14 @@ class PrivacyScreen extends StatelessWidget {
               'App tạo một mã ngẫu nhiên, không gắn với phần cứng hay danh tính của bạn, để tính hạn mức '
                   'lượt nhận diện mỗi ngày. Xóa dữ liệu trong Cài đặt sẽ tạo mã mới.'),
           section('Lịch sử',
-              'Lịch sử nhận diện và mẫu chờ mạng chỉ lưu trên điện thoại, không sao lưu lên đám mây. '
-                  'Mẫu chờ mạng tự xóa sau khi gửi.'),
+              'Lịch sử nhận diện và mẫu chờ mạng lưu trên điện thoại. Mẫu chờ mạng tự xóa sau khi gửi. '
+                  'Nếu bạn bật Đồng bộ Google Drive, lịch sử (không gồm âm thanh) và cài đặt được lưu trong '
+                  'thư mục riêng của Tìm Nhạc trên Google Drive của bạn. App chỉ xin quyền với thư mục đó và '
+                  'địa chỉ email, không đọc được file nào khác. Đăng xuất hoặc Xóa dữ liệu để dừng đồng bộ.'),
           section('Quyền',
-              'Micro: để nghe nhạc khi bạn bấm nút. Thông báo: chỉ khi có mẫu chờ mạng. '
+              'Micro: để nghe nhạc khi bạn bấm nút. Thông báo: khi có mẫu chờ mạng hoặc kết quả nhận diện '
+                  'chạy nền. Ghi màn hình (Android 10+, chỉ khi bạn chạm ô Tìm Nhạc trong Cài đặt nhanh): để thu '
+                  'âm thanh các app khác đang phát trong khoảng 12 giây; app không ghi hình. '
                   'App không xin quyền đọc bộ nhớ; file được chọn qua trình chọn file của hệ thống.'),
           section('Link nghe và tải',
               'App chỉ đề xuất nguồn hợp pháp: nền tảng nghe nhạc, cửa hàng bán nhạc, bài nghệ sĩ cho tải và nhạc '

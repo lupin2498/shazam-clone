@@ -63,8 +63,12 @@ final class PreviewPlayer {
     }
 }
 
-/// Local notification when a sample saved offline has been recognised (F7).
+/// Local notification when a sample saved offline has been recognised (F7). Tapping one that
+/// carries a history id reports it through [onTap].
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    /// Called on the main thread with the history id of a tapped notification.
+    var onTap: ((Int) -> Void)?
+
     func install() {
         UNUserNotificationCenter.current().delegate = self
     }
@@ -75,11 +79,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func show(title: String, body: String) {
+    func show(title: String, body: String, historyId: Int? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
+        if let id = historyId { content.userInfo = ["historyId": id] }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
@@ -91,6 +96,18 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .list, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let id = (response.notification.request.content.userInfo["historyId"] as? NSNumber)?.intValue
+        DispatchQueue.main.async {
+            if let id = id { self.onTap?(id) }
+            completionHandler()
+        }
     }
 }
 

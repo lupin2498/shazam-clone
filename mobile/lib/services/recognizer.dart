@@ -109,12 +109,16 @@ class ListenSession extends ChangeNotifier {
     required this.mode,
     required this.results,
     required this.pending,
-  });
+    String? source,
+  }) : _sourceOverride = source;
 
   final NativeBridge native;
   final ApiClient api;
   final SampleConfig config;
   final ListenMode mode;
+
+  /// `playback` when the "microphone" is the audio other apps play (Android background capture).
+  final String? _sourceOverride;
   final ResultHandler results;
   final PendingQueue pending;
 
@@ -135,7 +139,7 @@ class ListenSession extends ChangeNotifier {
 
   int get totalSeconds => mode == ListenMode.hum ? config.humS : config.fullS;
   String get _modeWire => mode == ListenMode.hum ? 'hum' : 'auto';
-  String get _source => mode == ListenMode.hum ? 'hum' : 'mic';
+  String get _source => _sourceOverride ?? (mode == ListenMode.hum ? 'hum' : 'mic');
   bool get isClosed => _done.isCompleted;
 
   Future<ListenOutcome> start() async {
@@ -178,7 +182,7 @@ class ListenSession extends ChangeNotifier {
       final sample = await native.snapshotRecording(maxMs: config.earlyProbeS * 1000);
       if (isClosed || _stopping || sample.rms < config.silenceRms || sample.aac.isEmpty) return;
       r = await api.recognize(
-          audio: sample.aac, mode: 'auto', source: 'mic', stage: 'early', sessionId: sessionId);
+          audio: sample.aac, mode: 'auto', source: _source, stage: 'early', sessionId: sessionId);
     } catch (_) {
       return; // The probe is best effort; the full sample decides.
     }

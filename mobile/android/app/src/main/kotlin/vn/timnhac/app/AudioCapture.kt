@@ -1,9 +1,13 @@
 package vn.timnhac.app
 
 import android.annotation.SuppressLint
+import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.projection.MediaProjection
+import androidx.annotation.RequiresApi
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.AutomaticGainControl
@@ -14,13 +18,18 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Microphone capture: PCM 16-bit mono 44.1 kHz.
+ * Capture as PCM 16-bit mono 44.1 kHz, from the microphone by default.
  *
- * Uses the VOICE_RECOGNITION source (no AGC / noise suppression per the Android CDD) and
- * additionally switches off any NS, AGC or AEC effect attached to the session, because
- * they distort the audio fingerprint (design doc, section 5).
+ * The microphone uses the VOICE_RECOGNITION source (no AGC / noise suppression per the Android
+ * CDD) and any NS, AGC or AEC effect attached to the session is switched off, because they
+ * distort the audio fingerprint (design doc, section 5). [createRecord] swaps the source, for
+ * example for the audio other apps are playing ([playbackRecord]).
  */
-class AudioCapture(private val onLevel: (Double) -> Unit) {
+class AudioCapture(
+    private val onLevel: (Double) -> Unit,
+    private val createRecord: (sampleRate: Int, bufferBytes: Int) -> AudioRecord = ::micRecord,
+    private val disableMicEffects: Boolean = true,
+) {
     val sampleRate = 44100
 
     private val lock = Any()
@@ -43,13 +52,7 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
         )
         if (minBuffer <= 0) return false
         val rec = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                max(minBuffer * 2, sampleRate / 5 * 2),
-            )
+            createRecord(sampleRate, max(minBuffer * 2, sampleRate / 5 * 2))
         } catch (e: Exception) {
             return false
         }
@@ -57,7 +60,7 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
             rec.release()
             return false
         }
-        disableEffects(rec.audioSessionId)
+        if (disableMicEffects) disableEffects(rec.audioSessionId)
         synchronized(lock) {
             buffer = ShortArray(sampleRate * maxSeconds)
             length = 0
@@ -146,6 +149,48 @@ class AudioCapture(private val onLevel: (Double) -> Unit) {
     }
 
     companion object {
+        /** The microphone, as used by "Nghe" and "Ngân nga". Caller must hold RECORD_AUDIO. */
+        @SuppressLint("MissingPermission")
+        fun micRecord(sampleRate: Int, bufferBytes: Int): AudioRecord = AudioRecord(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            bufferBytes,
+        )
+
+        /**
+         * What other apps are playing (Android 10+). Apps can opt out of being captured, and
+         * only media, game and unknown usages are captured: calls and notifications are not.
+         * Caller must hold RECORD_AUDIO and a running media projection.
+         */
+        @RequiresApi(29)
+        @SuppressLint("MissingPermission")
+        fun playbackRecord(projection: MediaProjection, sampleRate: Int, bufferBytes: Int): AudioRecord {
+            val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .build()
+            return AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(config)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(bufferBytes)
+                .build()
+        }
+
+        /** What the Dart side receives for a sample: AAC (ADTS), RMS and duration. */
+        fun encodePayload(pcm: ShortArray, sampleRate: Int): Map<String, Any> = mapOf(
+            "aac" to AacEncoder.encode(pcm, sampleRate),
+            "rms" to rms(pcm),
+            "durationMs" to (pcm.size.toLong() * 1000 / sampleRate).toInt(),
+        )
+
         /** RMS of the whole signal, 0..1 (1 = full scale). Used for the silence check. */
         fun rms(pcm: ShortArray, count: Int = pcm.size): Double {
             if (count == 0) return 0.0

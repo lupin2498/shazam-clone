@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cancel">Hủy</string>
+    <string name="tile_label">Tìm Nhạc</string>
+    <string name="tile_subtitle">Nhạc trong máy</string>
+    <string name="capture_channel">Đang nghe nhạc trong máy</string>
+    <string name="capture_listening_title">Đang nghe nhạc đang phát trên máy…</string>
+    <string name="capture_listening_body">Tìm Nhạc thu âm thanh trong khoảng 12 giây rồi báo kết quả.</string>
+    <string name="capture_already_running">Tìm Nhạc đang nghe nhạc trong máy…</string>
+    <string name="capture_needs_mic">Cần quyền micro: Android dùng quyền này cho cả âm thanh phát trong máy.</string>
+    <string name="capture_explain_title">Nghe nhạc đang phát trên máy</string>
+    <string name="capture_explain_body">Android sẽ hỏi quyền ghi hoặc truyền màn hình. Tìm Nhạc chỉ thu âm thanh đang phát trong khoảng 12 giây để nhận diện: không ghi hình và không lưu bản ghi. Một số app (ví dụ app có nội dung bản quyền) chặn việc thu này.</string>
+    <string name="capture_continue">Tiếp tục</string>
+</resources>

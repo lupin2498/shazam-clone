@@ -21,6 +21,7 @@ class FakeNative implements NativeBridge {
   final levelCtrl = StreamController<double>.broadcast();
   final sharedCtrl = StreamController<PickedFile>.broadcast();
   final connectivityCtrl = StreamController<bool>.broadcast();
+  final tapCtrl = StreamController<int>.broadcast();
 
   bool micGranted = true;
   bool online = true;
@@ -137,8 +138,62 @@ class FakeNative implements NativeBridge {
   @override
   Future<bool> isOnline() async => online;
 
+  /// History id attached to each notification, in the same order as [notifications].
+  final notificationIds = <int?>[];
+
   @override
-  Future<void> notify(String title, String body) async => notifications.add((title, body));
+  Future<void> notify(String title, String body, {int? historyId}) async {
+    notifications.add((title, body));
+    notificationIds.add(historyId);
+  }
+
+  @override
+  Stream<int> get notificationTaps => tapCtrl.stream;
+
+  bool playbackSupported = false;
+  int playbackStarts = 0;
+  int tileResult = QuickTileResult.added;
+  int finishCalls = 0;
+
+  @override
+  Future<bool> playbackCaptureSupported() async => playbackSupported;
+
+  @override
+  Future<bool> startPlaybackCapture() async {
+    playbackStarts++;
+    return playbackSupported;
+  }
+
+  @override
+  Future<int> requestAddQuickSettingsTile() async => tileResult;
+
+  @override
+  Future<void> finishBackgroundTask() async => finishCalls++;
+
+  /// What googleAuthorize answers (null = cancelled / needs the user), or throws [googleError].
+  GoogleAuthorization? googleAuth = const GoogleAuthorization(accessToken: 'token-1', email: 'an@example.com');
+  Object? googleError;
+
+  /// When set, interactive and silent requests answer differently.
+  GoogleAuthorization? Function({required bool interactive, String? invalidToken})? googleAnswer;
+  final googleCalls = <({bool interactive, String? email, String? invalidToken, String? iosClientId})>[];
+  int googleSignOuts = 0;
+
+  @override
+  Future<GoogleAuthorization?> googleAuthorize({
+    required bool interactive,
+    String? email,
+    String? invalidToken,
+    String? iosClientId,
+  }) async {
+    googleCalls.add((interactive: interactive, email: email, invalidToken: invalidToken, iosClientId: iosClientId));
+    if (googleError != null) throw googleError!;
+    final answer = googleAnswer;
+    return answer != null ? answer(interactive: interactive, invalidToken: invalidToken) : googleAuth;
+  }
+
+  @override
+  Future<void> googleSignOut({String? email, String? accessToken, String? iosClientId}) async => googleSignOuts++;
 
   @override
   Future<bool> requestNotificationPermission() async => true;
@@ -246,5 +301,6 @@ Future<AppServices> fakeServices({
     pending: PendingQueue(native: bridge, api: api, history: history, settings: settings),
     config: config,
     integrity: integrity,
+    httpClient: MockClient(handler),
   );
 }

@@ -58,6 +58,8 @@ kotlin {
 dependencies {
     // Play Integrity (standard requests) protects the paid recognition engines (sections 4, 10).
     implementation("com.google.android.play:integrity:1.6.0")
+    // Google sign-in for "Đồng bộ Google Drive" (AuthorizationClient, scopes email + drive.appdata).
+    implementation("com.google.android.gms:play-services-auth:21.6.0")
 }
 
 flutter {

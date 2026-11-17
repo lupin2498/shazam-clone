@@ -2,9 +2,10 @@ import json
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from app.config import Settings
-from app.models import TrackLink
+from app.models import Recognition, TrackLink
 from app.security.integrity import IntegrityVerifier, request_hash, sha256_hex
 from tests.conftest import adts_stream, wav_bytes
 
@@ -46,6 +47,21 @@ async def test_hum_mode_returns_candidates(client):
     body = resp.json()
     assert body["status"] == "candidates" and len(body["candidates"]) == 3
     assert all(c["flags"] == ["melody"] for c in body["candidates"])
+
+
+async def test_playback_capture_is_an_accepted_source(client):
+    # Audio of another app on the phone (Android AudioPlaybackCapture): recognised like the mic.
+    resp = await recognize(client, source="playback", session_id="sess-playback-1")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "matched"
+    async with client.app.state.services.db.sessionmaker() as s:
+        rec = (await s.execute(select(Recognition).where(Recognition.session_id == "sess-playback-1"))).scalar_one()
+    assert rec.source == "playback" and rec.mode == "auto"
+
+
+async def test_unknown_source_is_rejected(client):
+    resp = await recognize(client, source="radio")
+    assert resp.status_code == 422
 
 
 async def test_same_track_is_stored_once(client):

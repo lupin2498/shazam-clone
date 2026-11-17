@@ -82,18 +82,23 @@ class IntegrityHelper(private val context: Context) {
     }
 }
 
-/** Local notification when a sample saved offline has been recognised (F7). */
+/**
+ * Result notifications: a sample saved offline has been recognised (F7), or music playing in
+ * another app has been recognised in the background. Tapping one opens the app, on the history
+ * entry when [show] is given its id.
+ */
 class Notifier(private val context: Context) {
-    private var nextId = 1000
-
-    fun show(title: String, body: String) {
+    fun show(title: String, body: String, historyId: Int? = null) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
+        val id = nextId.getAndIncrement()
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            ?.apply { if (historyId != null) putExtra(MainActivity.EXTRA_OPEN_HISTORY, historyId) }
+        // One request code per notification, so each keeps its own history id.
         val pending = PendingIntent.getActivity(
-            context, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            context, id, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val builder = if (Build.VERSION.SDK_INT >= 26) {
             manager.createNotificationChannel(
@@ -110,12 +115,16 @@ class Notifier(private val context: Context) {
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pending)
+            .setStyle(Notification.BigTextStyle().bigText(body))
             .build()
-        manager.notify(nextId++, notification)
+        manager.notify(id, notification)
     }
 
     companion object {
         const val CHANNEL = "recognition_results"
+
+        /** Shared by every Notifier in the process (the app and the background capture service). */
+        private val nextId = java.util.concurrent.atomic.AtomicInteger(1000)
     }
 }
 

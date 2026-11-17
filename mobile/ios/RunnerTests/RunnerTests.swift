@@ -203,6 +203,48 @@ final class RunnerTests: XCTestCase {
         XCTAssertThrowsError(try AudioFileDecoder.url(from: "https://example.com/a.mp3"))
     }
 
+    // MARK: - Google sign-in helpers
+
+    func testRedirectSchemeIsTheReversedClientId() {
+        XCTAssertEqual(GoogleAuth.redirectScheme(clientId: "1234-abcd.apps.googleusercontent.com"),
+                       "com.googleusercontent.apps.1234-abcd")
+        XCTAssertNil(GoogleAuth.redirectScheme(clientId: ""))
+        XCTAssertNil(GoogleAuth.redirectScheme(clientId: "not-a-client-id"))
+        XCTAssertNil(GoogleAuth.redirectScheme(clientId: ".apps.googleusercontent.com"))
+    }
+
+    func testPkceMatchesTheRfcExample() {
+        // RFC 7636, appendix B.
+        XCTAssertEqual(GoogleAuth.codeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+                       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        let verifier = GoogleAuth.codeVerifier()
+        XCTAssertEqual(verifier.count, 43)
+        XCTAssertNil(verifier.rangeOfCharacter(from: CharacterSet(charactersIn: "+/=")))
+        XCTAssertNotEqual(verifier, GoogleAuth.codeVerifier())
+    }
+
+    func testAuthorizationUrlAsksOnlyForTheAppFolderAndEmail() throws {
+        let url = try XCTUnwrap(GoogleAuth.authorizationURL(
+            clientId: "1234-abcd.apps.googleusercontent.com",
+            redirect: "com.googleusercontent.apps.1234-abcd:/oauth2redirect",
+            verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", state: "s1"))
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(url.host, "accounts.google.com")
+        XCTAssertEqual(query["scope"], "email https://www.googleapis.com/auth/drive.appdata")
+        XCTAssertEqual(query["code_challenge"], "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        XCTAssertEqual(query["code_challenge_method"], "S256")
+        XCTAssertEqual(query["response_type"], "code")
+        XCTAssertEqual(query["state"], "s1")
+    }
+
+    func testFormBodyIsPercentEncoded() {
+        XCTAssertEqual(GoogleAuth.formBody(["token": "a/b+c d", "grant_type": "refresh_token"]),
+                       "grant_type=refresh_token&token=a%2Fb%2Bc%20d")
+        XCTAssertEqual(GoogleAuth.payload(access: "t", json: ["expires_in": 3599]) as NSDictionary,
+                       ["accessToken": "t", "expiresIn": 3599] as NSDictionary)
+    }
+
     // MARK: - Bridge payload
 
     func testEncodePayloadShape() throws {

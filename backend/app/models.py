@@ -89,7 +89,7 @@ class Recognition(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     device_id: Mapped[str] = mapped_column(String(64), index=True)  # anonymous id
     session_id: Mapped[str | None] = mapped_column(String(64))
-    source: Mapped[str] = mapped_column(String(8))  # mic | file | hum
+    source: Mapped[str] = mapped_column(String(8))  # mic | file | hum | playback
     mode: Mapped[str] = mapped_column(String(8))  # auto | hum
     stage: Mapped[str] = mapped_column(String(8))  # early | full
     engine: Mapped[str | None] = mapped_column(String(32))

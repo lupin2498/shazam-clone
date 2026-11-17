@@ -24,6 +24,8 @@ env:
   FLUTTER_VERSION: "3.50.0"
   # Backend address compiled into the installers; empty keeps the default of mobile/lib/config.dart.
   API_BASE_URL: ${{ inputs.api_base_url || vars.API_BASE_URL }}
+  # OAuth client of the iOS app for "Đồng bộ Google Drive" (repository variable; README).
+  GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
 
 jobs:
   backend:
@@ -88,6 +90,10 @@ jobs:
             cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "build/installers/tim-nhac-$abi.apk"
           done
           ls -l build/installers
+          # Google sign-in (Drive sync) only works for a certificate registered in the Google
+          # Cloud project: this is the SHA-1 to register for these APKs.
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          "$apksigner" verify --print-certs build/installers/tim-nhac-arm64-v8a.apk | grep -E "SHA-1|DN:" || true
       - uses: actions/upload-artifact@v4
         with:
           name: tim-nhac-android
@@ -151,6 +157,7 @@ jobs:
           xcodebuild -version
           defines=()
           if [ -n "$API_BASE_URL" ]; then defines+=("--dart-define=API_BASE_URL=$API_BASE_URL"); fi
+          if [ -n "$GOOGLE_IOS_CLIENT_ID" ]; then defines+=("--dart-define=GOOGLE_IOS_CLIENT_ID=$GOOGLE_IOS_CLIENT_ID"); fi
           flutter build ios --release --no-codesign "${defines[@]}"
       - name: Package unsigned IPA
         run: |

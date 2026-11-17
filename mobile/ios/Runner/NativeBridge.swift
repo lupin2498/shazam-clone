@@ -53,8 +53,11 @@ final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPic
     private var levelSink: FlutterEventSink?
     private var sharedSink: FlutterEventSink?
     private var connectivitySink: FlutterEventSink?
+    private var tapSink: FlutterEventSink?
     private var pendingShared: [String: Any]?
+    private var pendingTap: Int?
     private var pickResult: FlutterResult?
+    private lazy var googleAuth = GoogleAuth(anchor: { [weak self] in self?.presenter?.view.window })
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let bridge = NativeBridge()
@@ -98,8 +101,24 @@ final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPic
                },
                onCancel: { [weak self] in self?.connectivitySink = nil })
 
+        // Taps on a result notification: the history entry to open.
+        listen("vn.timnhac/notification_taps", messenger,
+               onListen: { [weak self] sink in
+                   guard let self = self else { return }
+                   self.tapSink = sink
+                   if let id = self.pendingTap {
+                       self.pendingTap = nil
+                       sink(id)
+                   }
+               },
+               onCancel: { [weak self] in self?.tapSink = nil })
+
         connectivity.onChange = { [weak self] online in self?.connectivitySink?(online) }
         connectivity.start()
+        notifier.onTap = { [weak self] id in
+            guard let self = self else { return }
+            if let sink = self.tapSink { sink(id) } else { self.pendingTap = id }
+        }
         notifier.install()
         registrar.addSceneDelegate(self)
         // Before any file can arrive: nothing from a previous launch is still referenced.
@@ -198,8 +217,35 @@ final class NativeBridge: NSObject, FlutterSceneLifeCycleDelegate, UIDocumentPic
         case "isOnline":
             result(connectivity.isOnline)
         case "notify":
-            notifier.show(title: args["title"] as? String ?? "", body: args["body"] as? String ?? "")
+            notifier.show(
+                title: args["title"] as? String ?? "", body: args["body"] as? String ?? "",
+                historyId: (args["historyId"] as? NSNumber)?.intValue)
             result(nil)
+        case "playbackCaptureSupported", "startPlaybackCapture":
+            // iOS does not let an app capture what other apps play.
+            result(false)
+        case "requestAddQuickSettingsTile":
+            result(-1)
+        case "finishBackgroundTask":
+            result(nil)
+        case "googleAuthorize":
+            guard let clientId = args["iosClientId"] as? String, !clientId.isEmpty else {
+                return result(FlutterError(code: "not_configured", message: "GOOGLE_IOS_CLIENT_ID", details: nil))
+            }
+            googleAuth.authorize(interactive: args["interactive"] as? Bool ?? false, clientId: clientId) { outcome in
+                switch outcome {
+                case .success(let payload):
+                    result(payload)
+                case .failure(.notConfigured):
+                    result(FlutterError(code: "not_configured", message: "GOOGLE_IOS_CLIENT_ID", details: nil))
+                case .failure(.network(let message)):
+                    result(FlutterError(code: "network", message: message, details: nil))
+                case .failure(.google(let message)):
+                    result(FlutterError(code: "google_error", message: message, details: nil))
+                }
+            }
+        case "googleSignOut":
+            googleAuth.signOut { result(nil) }
         case "requestNotificationPermission":
             notifier.requestPermission { granted in result(granted) }
         case "integrityPrepare":
